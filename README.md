@@ -1,7 +1,7 @@
 # eval-ghidra
 
 A tiny Python client that evaluates a snippet against a **live
-[GhidraMCP](https://github.com/LaurieWired/GhidraMCP) server**.
+[GhidraMCP](https://github.com/bethington/ghidra-mcp) server**.
 
 GhidraMCP exposes a few hundred tools over HTTP. `eval-ghidra` fetches the live
 `/mcp/schema`, generates a Python callable for every tool, and runs your snippet
