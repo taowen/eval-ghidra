@@ -1,14 +1,14 @@
-// Replace a same-named struct with the selected focused type header.
+// Replace a same-named struct with the selected focused type header
 // definition, preserving all existing references.
-// Parsing delegates to ImportNrTypes.java types-only; deploy both together.
+// Parsing delegates to ImportTypes.java types-only; deploy both together.
 //
 // Why: CParser skips same-named existing types, so a plain re-import
-// cannot update FloatRigidPose / InputManager / TutorialImuTracker. This
-// script renames the old type aside, parses the header (fresh type),
-// then replaceDataType migrates every reference and drops the legacy.
+// cannot update an existing structure. This script renames the old type
+// aside, parses the header (fresh type), then replaceDataType migrates
+// every reference and drops the legacy.
 //
 // Usage (MCP run_ghidra_script):
-//   ReplaceNrType.java <module.h> <TypeName>
+//   ReplaceType.java <module.h> <TypeName>
 //
 // @category Tutorial
 
@@ -44,7 +44,7 @@ public class ReplaceType extends GhidraScript {
         String[] args = getScriptArgs();
         if (args.length != 2) {
             throw new IllegalArgumentException(
-                    "usage: ReplaceNrType.java <module.h> <TypeName>");
+                    "usage: ReplaceType.java <module.h> <TypeName>");
         }
         File header = new File(args[0]);
         if (!header.isFile()) {
@@ -55,13 +55,13 @@ public class ReplaceType extends GhidraScript {
         // MCP deploys siblings outside the GUI's configured script search paths.
         // Resolve and compile the importer before changing any type name.
         ResourceFile importerSource = new ResourceFile(getSourceFile().getParentFile(),
-                "ImportNrTypes.java");
+                "ImportTypes.java");
         // A previously deployed importer may no longer exist beside this script.
         // Canonical headers live under
         // tools/ghidra; resolve the repository importer before mutating types.
         if (!importerSource.isFile()) {
             File repositoryImporter = new File(header.getParentFile().getParentFile(),
-                    "ImportNrTypes.java");
+                    "ImportTypes.java");
             if (repositoryImporter.isFile()) {
                 // JavaScriptProvider compiles only configured script bundles.
                 java.nio.file.Files.copy(repositoryImporter.toPath(),
@@ -105,7 +105,7 @@ public class ReplaceType extends GhidraScript {
         int before = dtm.getDataTypeCount(true);
         // Keep one parser path. CParserUtils uses storeDataType=true and can
         // clear unrelated complete layouts when this header references them.
-        // ImportNrTypes resolves existing composites and stores parsed types
+        // ImportTypes resolves existing composites and stores parsed types
         // without reapplying live function signatures in this mode.
         try {
             importer.execute(getState(), getControls());

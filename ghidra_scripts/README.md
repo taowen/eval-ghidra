@@ -5,15 +5,12 @@ project and stripped of vendor-specific names. Run them with
 `eval-ghidra.py`'s `run_ghidra_script` (absolute path) against a live
 GhidraMCP instance.
 
-## Two kinds of script
+## What these scripts are
 
-Read this before running anything. The scripts fall into two groups:
-
-### 1. Reusable refine/audit scripts — use as-is
-
-These depend only on public Ghidra APIs and your program's own data. They take
-explicit arguments (function VA, register, stack offset, type name, ...) and
-carry **no embedded addresses or type definitions**.
+Every script here is **reusable**. It depends only on public Ghidra APIs and your
+program's own data. Each takes explicit arguments (function VA, register, stack
+offset, type name, ...) and carries **no embedded addresses, offsets, or type
+definitions**.
 
 ```
 ImportTypes, InspectType, InspectFunctionAbi, InspectReturnStorage,
@@ -24,33 +21,14 @@ MergeEquivalentTypes, ReplaceType, ResolveConflictType,
 RefineFunctionRange, RefineStackSlot, RefineStackCopy, RefineUnionFacet,
 RefineRegisterSlot, RefineDynamicLocal, RefineHighLocal, RefineHighInputLocal,
 RefineAllocatedLocal, RefineLoadedLocal, RemoveFunctionLocals,
-RemoveExactCommentLines, TestFunctionTypeRefresh, TestImportCallbacks,
+RemoveExactCommentLines, TestImportCallbacks,
 PinMcpPort
 ```
 
-### 2. Project-specific examples — adapt before use
-
-These were written against one analyzed binary. They contain **hard-coded
-offsets and `Tutorial*` type names** and exist to show the technique, not to
-work turnkey. Treat the offsets as placeholders, replace the `Tutorial*`
-types with your own canonical types, and re-verify every address.
-
-```
-RefineCylinderCropLocals, RefineExternalBlitConstructorLocals,
-RefineExternalResolverLocals, RefineExternalSurfaceHolderLocals,
-RefineJniEnvironmentGlobals, RefineJniExceptionGlobals,
-RefineRenderCommandGlobals, RefineRenderSourceUpdateLocals,
-RefineRenderTextureLocals, RefineStateLifecycleGlobals,
-RefineWarpBackendInitLocals
-```
-
-## What `Tutorial*` names mean
-
-The `Tutorial*` prefix (e.g. `TutorialLoggerHandle`, `TutorialSharedHandle`)
-is a **neutral placeholder** for whatever vendor type occupied that role. It is
-not a real type shipped by any SDK. The example scripts expect you to import
-matching types under those names, or to rename them to your own canonical
-types.
+Scripts that were written against one specific analyzed binary — with hard-coded
+offsets and placeholder type names — have been removed. If you need that kind of
+per-analyte bind script, write it for your own binary; a copied one contains no
+usable evidence.
 
 ## Argument conventions
 

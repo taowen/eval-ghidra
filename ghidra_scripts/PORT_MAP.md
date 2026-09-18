@@ -5,9 +5,8 @@ Target: `eval-ghidra/ghidra_scripts/`
 
 Goal: reusable, vendor-neutral refine scripts for the tutorial. Remove the
 `Nr`/`nr` marker (NREAL) everywhere: class names, `@category`, type names,
-helper tags and data-type category prefixes. Project-specific scripts keep
-their structure but their hard-coded `Nr*` types become neutral `Tutorial*`
-names; they are shipped as examples of the technique, not as turnkey tools.
+helper tags and data-type category prefixes. Only scripts that are reusable
+against an arbitrary program are kept; per-analyte bind scripts are removed.
 
 ## Generic rename (no content change beyond category)
 
@@ -35,7 +34,6 @@ names; they are shipped as examples of the technique, not as turnkey tools.
 | RefineUnionFacet | RefineUnionFacet |
 | RemoveExactCommentLines | RemoveExactCommentLines |
 | RemoveFunctionLocals | RemoveFunctionLocals |
-| TestFunctionTypeRefresh | TestFunctionTypeRefresh |
 
 `@category NR.Refine` / `@category Arctrl` / `@category XREAL` all become
 `@category Tutorial`.
@@ -52,33 +50,25 @@ names; they are shipped as examples of the technique, not as turnkey tools.
 | ResolveNrConflictType | ResolveConflictType |
 | TestImportNrCallbacks | TestImportCallbacks |
 
-## Project-specific examples (structure kept, Nr types neutralised)
+## Removed: project-specific examples
 
-These are pinned examples of a technique. Their `Nr*` type references become
-`Tutorial*` and their `libnr_api.so` guard is dropped so the script is not tied
-to one program. They still contain example offsets and must be adapted before
-real use; the header comment says so.
-
-| old | new |
-| --- | --- |
-| RefineCylinderCropLocals | RefineCylinderCropLocals |
-| RefineExternalBlitConstructorLocals | RefineExternalBlitConstructorLocals |
-| RefineExternalResolverLocals | RefineExternalResolverLocals |
-| RefineExternalSurfaceHolderLocals | RefineExternalSurfaceHolderLocals |
-| RefineJniEnvironmentGlobals | RefineJniEnvironmentGlobals |
-| RefineJniExceptionGlobals | RefineJniExceptionGlobals |
-| RefineRenderCommandGlobals | RefineRenderCommandGlobals |
-| RefineRenderSourceUpdateLocals | RefineRenderSourceUpdateLocals |
-| RefineRenderTextureLocals | RefineRenderTextureLocals |
-| RefineStateLifecycleGlobals | RefineStateLifecycleGlobals |
-| RefineWarpBackendInitLocals | RefineWarpBackendInitLocals |
+Eleven scripts were written against one specific analyzed binary, with
+hard-coded offsets and neutral `Tutorial*` placeholder type names
+(`RefineCylinderCropLocals`, `RefineExternalBlitConstructorLocals`,
+`RefineExternalResolverLocals`, `RefineExternalSurfaceHolderLocals`,
+`RefineJniEnvironmentGlobals`, `RefineJniExceptionGlobals`,
+`RefineRenderCommandGlobals`, `RefineRenderSourceUpdateLocals`,
+`RefineRenderTextureLocals`, `RefineStateLifecycleGlobals`,
+`RefineWarpBackendInitLocals`). They were deleted: a copied per-analyte bind
+script carries no usable evidence for another binary. Write that kind of script
+against your own program when you need it.
 
 ## Content substitutions applied to every file
 
 | pattern | replacement |
 | --- | --- |
 | `@category NR.Refine` / `Arctrl` / `XREAL` | `@category Tutorial` |
-| `Nr` prefix on type/helper names (e.g. `NrLoggerHandle`) | `Tutorial` prefix |
+| `Nr` prefix on type/helper names (e.g. `NrLoggerHandle`) | removed or `Tutorial` prefix (see above) |
 | `nr-types-*.h` category path | `tutorial-types` |
 | `libnr_api.so` program guard | removed |
 | `@nr_nontrivial_sret` / `@nr_nontrivial_callback` / `@nr_noreturn` | `@tutorial_nontrivial_sret` / `@tutorial_nontrivial_callback` / `@tutorial_noreturn` |

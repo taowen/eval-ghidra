@@ -14,7 +14,7 @@ import ghidra.program.model.listing.Variable;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.database.SpecExtension;
 
-/** ImportNrTypes — parse a C struct header into the active program's DTM
+/** ImportTypes — parse a C struct header into the active program's DTM
  *  and apply function prototypes as USER_DEFINED signatures.
  *
  *  Mechanism (TRANSLATION_HANDBOOK §2.5):
@@ -31,7 +31,7 @@ import ghidra.program.database.SpecExtension;
  *      unrefined placeholders and must not overwrite current signatures)
  *
  *  Verify parse_succeeded=true and failed=0 before using the refinement.
- *  Usage: ImportNrTypes.java <c-header-path> [types-only]
+ *  Usage: ImportTypes.java <c-header-path> [types-only]
  */
 public class ImportTypes extends GhidraScript {
     private static final int DEFAULT_SOURCE_LIMIT = 64 * 1024;
@@ -40,7 +40,7 @@ public class ImportTypes extends GhidraScript {
     public void run() throws Exception {
         String[] args = getScriptArgs();
         if (args.length < 1) {
-            println("usage: ImportNrTypes.java <c-header-path> [types-only]");
+            println("usage: ImportTypes.java <c-header-path> [types-only]");
             return;
         }
         boolean typesOnly = false;

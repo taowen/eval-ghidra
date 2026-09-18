@@ -19,9 +19,9 @@ public class RefineStackSlot extends GhidraScript {
         if (function == null) throw new IllegalArgumentException("not a function entry");
         DataType type = null;
         // A bare name denotes the canonical root type. Older imports may have
-        // retained category-scoped copies such as
-        // /tutorial-types/runtime.h/TutorialLoggerHandle; those are not an ambiguity when
-        // the root type exists. An explicit /path still selects that exact type.
+        // retained category-scoped copies such as /some-module/TypeName; those
+        // are not an ambiguity when the root type exists. An explicit /path
+        // still selects that exact type.
         if (!args[3].startsWith("/")) {
             type = currentProgram.getDataTypeManager().getDataType("/" + args[3]);
         }

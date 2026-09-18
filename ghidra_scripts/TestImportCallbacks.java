@@ -1,5 +1,5 @@
 // Live-Ghidra regression for cross-header anonymous callback collisions.
-// Deploy beside ImportNrTypes.java; runs types-only imports, then removes its
+// Deploy beside ImportTypes.java; runs types-only imports, then removes its
 // fixture types. Does not change any official function signature.
 // @category Tutorial
 import ghidra.app.script.GhidraScript;
@@ -38,8 +38,8 @@ public class TestImportCallbacks extends GhidraScript {
                 || dtm.getDataType("/TutorialCallbackImportTestB") != null) {
             throw new IllegalStateException("previous fixture types still exist");
         }
-        ResourceFile source = new ResourceFile(getSourceFile().getParentFile(), "ImportNrTypes.java");
-        if (!source.isFile()) throw new IllegalStateException("deploy ImportNrTypes.java beside test");
+        ResourceFile source = new ResourceFile(getSourceFile().getParentFile(), "ImportTypes.java");
+        if (!source.isFile()) throw new IllegalStateException("deploy ImportTypes.java beside test");
         Set<String> before = new HashSet<>();
         Map<String, String> foreignPrototypes = new HashMap<>();
         var types = dtm.getAllDataTypes();
