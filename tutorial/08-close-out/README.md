@@ -34,25 +34,105 @@ Mapping: check 1 -> chapter 03 naming, 2 -> chapter 05 range, 3 -> chapters 02/0
 ABI and CALL, 4 -> chapter 04 indirect calls, 5 -> chapter 06 rodata,
 6 -> chapter 05 cleanup, 7 -> chapter 01 layout plus the re-decompile rule.
 
-## The V5 plate: write it for the next reader
+## Worked example: chapter 02's `query_pose` (RVA 0x46a4)
+
+Before close-out, `analyze_function_completeness` reports:
 
 ```text
-One line describing how inputs become outputs.
-
-Algorithm:
-  In real business order: data sources, operations, writes back, locks/callbacks.
-Parameters:
-  Name, type, unit, owning object/output range.
-Returns:
-  Meaning of the return value and error paths.
-Special Cases:
-  Real edge conditions; unresolved items or tool residue and their evidence.
-Source:
-  Pinned official SO identity; key Listing evidence lives in function/instruction comments.
+completeness_score = 41.54
+undefined_variables = [fVar1, QVar4, fVar2, fVar3]   (all generic names)
+has_plate_comment = false
 ```
 
-Add PRE/EOL comments to key instructions, and keep lanes/rounding trees in vector
-expressions. **After a type change, check whether the plate is still accurate.**
+### 1. Name the locals
+
+```python
+set_variables(function_address="0x46a4", variables={
+  "fVar1": {"name": "adjusted_x", "type": "float"},
+  "fVar2": {"name": "adjusted_y", "type": "float"},
+  "fVar3": {"name": "confidence", "type": "float"},
+  "QVar4": {"name": "result",     "type": "Query"}
+})
+```
+
+The tool reports a partial success (`names_set: 4, failed: 4`) because `fVar1`
+and friends are **decompiler display names**, not persistent DB symbols. The
+names land in the DB, but the C still shows `fVar*` until those DB locals are
+wired to the SSA values. Re-running the type step fixes the display:
+
+```python
+set_local_variable_type(function_address="0x46a4", variable_name="result",     new_type="Query")
+set_local_variable_type(function_address="0x46a4", variable_name="adjusted_x", new_type="float")
+set_local_variable_type(function_address="0x46a4", variable_name="adjusted_y", new_type="float")
+```
+
+The C becomes:
+
+```c
+Query query_pose(float x, float y, int mode)
+{
+  float adjusted_y;
+  Query result;
+  float adjusted_x;
+
+  adjusted_y = y + 1.0;
+  adjusted_x = x + 1.0;
+  if (mode != 1) {
+    adjusted_y = y;
+    adjusted_x = x;
+  }
+  result.confidence = 0.0;
+  if (mode != 0) {
+    result.confidence = 0.5;
+  }
+  result.y = adjusted_y;
+  result.x = adjusted_x;
+  ...
+}
+```
+
+> **Lesson**: there are two layers. The decompiler prints its own names; the
+> database holds the names you set. A rename only shows up in the C once the DB
+> symbol is tied to the value the decompiler uses.
+
+### 2. Write the V5 plate
+
+```text
+Builds a Query from a 2D point and a mode flag.
+
+Algorithm:
+  adjusted_x = (mode == 1) ? x + 1.0 : x
+  adjusted_y = (mode == 1) ? y + 1.0 : y
+  confidence = (mode == 0) ? 0.0 : 0.5
+
+Parameters:
+  x, y  float input point
+  mode  int; 1 applies the +1 offset, 0 yields zero confidence
+
+Returns:
+  Query (12 bytes) in s0/s1/s2.
+
+Special Cases:
+  mode values other than 0/1 take the non-1 offset branch and the non-0
+  confidence branch.
+
+Source:
+  Tutorial chapter 02 example; Listing at RVA 0x46a4.
+```
+
+### 3. Re-check
+
+```text
+completeness_score = 72.69   (from 41.54)
+undefined_variables = []
+has_plate_comment = true
+```
+
+The remaining deductions are the tool's Hungarian-notation house style (it wants
+`flx`, `nMode`, ...) and a request for numbered algorithm steps and inline
+comments. Those are **tool conventions, not correctness**, so they are accepted
+with a reason rather than chased. What matters for the tutorial is that
+`undefined_variables` is empty and every name is semantic.
 
 ## Separate three kinds of information (the point of this chapter)
 
@@ -85,7 +165,8 @@ standard C++/the runtime, and what must be exact.**
 
 ## Chapter checklist
 
-- [ ] All seven checks point to concrete evidence
-- [ ] No unexplained business placeholder names remain in the C; residue is documented
+- [ ] `analyze_function_completeness` was run before and after
+- [ ] The score rose and `undefined_variables` became empty
 - [ ] The plate matches the current C/types and distinguishes confirmed/inferred/unknown
+- [ ] Remaining deductions are explained (tool convention vs real gap)
 - [ ] `save_program()` succeeded and the remaining gaps are stated

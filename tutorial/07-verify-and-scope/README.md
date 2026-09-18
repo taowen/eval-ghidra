@@ -10,7 +10,7 @@ right" for "is right"**:
 
 - A tool prints `succeeded`, but that only means "it was written";
 - A leaf function is bit-exact, but the whole chain is not connected;
-- Emulation produces the expected number, but the emulator provided libm itself.
+- Emulation produces the expected number, but it cannot speak for the device.
 
 So verification must answer two questions: **how to verify**, and **what the
 verification does and does not prove**.
@@ -28,31 +28,67 @@ verification does and does not prove**.
 **A PASS must always be reported with what it covers.** A local PASS cannot fill a
 global gap.
 
-## Method A: P-code emulation (fast, with hard limits)
+## Method A: P-code emulation (and its real limits)
 
 ```bash
 python3 eval-ghidra.py --help emulate_function
 ```
 
-Call only **confirmed true entries**, and verify packed/padded objects, registers,
-and the x8 return ABI.
+**Connecting to the tutorial instance, this tool does not work on AArch64.** Its
+implementation requires an x86 register (`ESP`), so every attempt fails with:
+
+```text
+Emulation failed: Undefined register: ESP
+```
+
+That failure is the lesson, not a detour. The tool's value depends on a language
+assumption that does not hold for the target. When you do have a supported
+language, it gives:
 
 | You get | You do not get |
 | --- | --- |
-| Scalar-only input -> output | Unimplemented `CALLOTHER` |
-| Bit/integer results | AArch64/NEON execution on the device |
-| Whether it returns normally | The libm dependency (the **emulator may provide it**) |
-| Whether the ABI is modeled correctly | Complex dependency interactions, threads, GPU |
+| Scalar-only register results after a run | AArch64/NEON execution semantics |
+| Whether control returns normally | Dependency behavior (e.g. libm) |
+| Whether the ABI is modeled as you expect | Threads, GPU, timing |
 
-**The emulator providing libm does not mean the official dependency has been
-verified.**
+Two habits, whichever emulator you use:
 
-## Method B: same-input differential (strong, needs fixtures)
+- Emulation is a **fast cross-check for pure leaves**, never device evidence;
+- If the emulator supplies a library function (common for libm), you have not
+  verified the real dependency — record that limitation.
 
-Rules:
+## Method B: same-input differential (the real workhorse)
 
-- The official and translated sides use **independent fixtures that share no
-  mutable state**;
+This is what chapter 06's two builds let you do concretely. The two Listings
+differ (`fmadd` vs `fmul`+`fadd`), so take the same source expression and compare
+the two results bit for bit. `src/differential.c` does exactly that on the host:
+
+```bash
+g++ -O2 -std=c++17 -o build/chapter07-differential.exe \
+    tutorial/07-verify-and-scope/src/differential.c -lm
+./build/chapter07-differential.exe
+```
+
+Real output:
+
+```text
+case1    a=1.00000012 b=1.00000095 c=-1
+         fused = 1.07288372e-06  bits=0x35900001
+         split = 1.07288361e-06  bits=0x35900000
+         bit-identical = NO
+
+case2    a=1.00000012 b=1.00000203 c=-1
+         fused = 2.14576744e-06  bits=0x36100001
+         split = 2.14576721e-06  bits=0x36100000
+         bit-identical = NO
+```
+
+One ULP apart. This is why "the C looks the same" is not evidence: the
+differential compares **bits**, and it fails.
+
+The rules that make a differential meaningful:
+
+- The two sides use **independent fixtures that share no mutable state**;
 - Tests bind existing types instead of rewriting a structure list that drifts;
 - Dependencies have three execution modes: run the official, replay captured
   interactions, run the translation;
@@ -61,7 +97,7 @@ Rules:
   return values and side effects — **you cannot pour the parent's expected final
   state into the input** (that makes the test always pass while proving nothing).
 
-## Static check tools
+## A static cross-check that does work here
 
 ```python
 run_ghidra_script(script_name=r"...\ghidra_scripts\AuditAarch64ResultUse.java",
@@ -78,11 +114,12 @@ item**, and do not wave it through with a score or "tool limitation".
 
 - You treat emulation output as device behavior and miss NEON/timing differences;
 - You use a local function PASS to claim the whole chain passes;
-- You pour expected output into the parent so the test always passes and proves nothing.
+- You pour expected output into the parent so the test always passes and proves nothing;
+- You accept "the C looks equivalent" without a bit-level comparison.
 
 ## Chapter checklist
 
-- [ ] A leaf function returns the expected result under emulation
-- [ ] A function with libm/complex dependencies exposes emulation's limits, which you state
-- [ ] A same-input differential records "matched scope + uncovered branches"
-- [ ] Every PASS carries an evidence-scope statement
+- [ ] You ran `emulate_function` and can explain its `ESP` failure on AArch64
+- [ ] You built and ran `differential.c` and saw `bit-identical = NO`
+- [ ] You can state, for one PASS, exactly what it covers and what it does not
+- [ ] You can explain why "identical C" is not evidence
