@@ -14,56 +14,168 @@ This is the chapter that comes up most often in the real project.
 `src/stack.cpp`:
 
 ```cpp
-void reuse(float seed, const char* tag) {
-    { double m[4] = {seed, seed+1, seed+2, seed+3}; use_matrix(m); }  // stage 1: matrix
-    { char buf[32]; snprintf(buf, sizeof buf, "%s", tag); use_str(buf); } // stage 2: string
-    { Foo* p = make_foo(); consume(p); }                               // stage 3: pointer
+int reuse_stack(int seed, const char* tag) {
+    int result = 0;
+    { double m[4] = {...}; use_matrix(m); result += (int)m[0]; }   // stage 1: matrix
+    { char buf[32]; int n = snprintf(buf, 32, "%s", tag); use_str(buf); result += n; } // stage 2: string
+    { int* p = make_foo(); if (p) { p[0] = result; use_foo(p); result += p[0]; } }      // stage 3: pointer
+    return result;
 }
 ```
 
-The decompiler shows a double as a pointer, the matrix's first word as a logger
-field, and a time addition as `text + timestamp`.
+The real decompiler output:
+
+```c
+int reuse_stack(int param_1, undefined8 param_2)
+{
+  int iVar1;
+  int *piVar2;
+  int iVar3;
+  double local_40;
+  double local_38;
+  double dStack_30;
+  double local_28;
+
+  local_40 = (double)param_1;
+  local_28 = local_40 + 3.0;
+  local_38 = local_40 + 1.0;
+  dStack_30 = local_40 + 2.0;
+  use_matrix(&local_40);
+  iVar3 = (int)local_40;
+  iVar1 = snprintf(&local_40, 0x20, &DAT_00100650, param_2);   /* same slot! */
+  use_str(&local_40);                                          /* same slot! */
+  iVar1 = iVar1 + iVar3;
+  piVar2 = (int *)make_foo();
+  if (piVar2 != (int *)0x0) {
+    *piVar2 = iVar1;
+    use_foo();
+    iVar1 = *piVar2 + iVar1;
+  }
+  return iVar1;
+}
+```
+
+The same `local_40` is the matrix (`double[4]`), the `snprintf` buffer
+(`&local_40`), and the string (`use_str(&local_40)`). The variable list makes the
+conflict explicit:
+
+```text
+local_40  undefined8       Stack[-0x40]:8    <- matrix word + string buffer
+local_38  undefined1[16]   Stack[-0x38]:16   <- overlaps
+local_28  undefined8       Stack[-0x28]:8
+```
 
 **Renaming it alone, or locking it to `double[]`, corrupts the other lifecycle**
-— because those three objects genuinely share the same `Stack[-...]`.
+— because those three objects genuinely share the same `Stack[-0x40..]`.
+Also note `param_2` is `undefined8`, not `const char*`.
 
-## Symptom B: old/new pointer share a name; SSA merged them
+## Symptom B: optimization changes the shape entirely
 
 `src/live.cpp`:
 
 ```cpp
 int walk(const int* base) {
     const int* p = base; int sum = 0;
-    for (int i = 0; i < 8; ++i) { sum += *p++; (void)i; }  // post-increment: both old and new live
+    for (int i = 0; i < 8; ++i) { sum += *p++; (void)i; }
     return sum;
 }
 int branchy(int mode, int a, int b) {
-    int v = mode ? a : b;   // merge
-    if (mode) v += a;       // two merge groups in one register
+    int v = mode ? a : b;
+    if (mode) { v += a; } else { v -= b; }
     return v;
 }
 ```
 
-The decompiler shows the old/new pointers, and the two merge groups, as a single
-variable.
+The real output is a lesson in a different direction: the decompiler is not
+confused, it is **too clever**, because the optimizer already rewrote the code.
+
+```c
+int walk(undefined8 *param_1)
+{
+  return (int)*param_1 + (int)param_1[2] +
+         (int)((ulong)*param_1 >> 0x20) + (int)((ulong)param_1[2] >> 0x20) +
+         (int)param_1[1] + (int)param_1[3] +
+         (int)((ulong)param_1[1] >> 0x20) + (int)((ulong)param_1[3] >> 0x20);
+}
+
+int branchy(int param_1, int param_2)
+{
+  int iVar1;
+  iVar1 = 0;
+  if (param_1 != 0) {
+    iVar1 = param_2 << 1;
+  }
+  return iVar1;
+}
+```
+
+The real Listing shows why:
+
+```asm
+; walk
+104890  ldp q1,q0,[x0]        ; load 8 ints at once
+104894  add v0.4S,v1.4S,v0.4S ; vector add
+104898  addv s0,v0.4S         ; horizontal add
+10489c  fmov w0,s0
+1048a0  ret
+```
+
+The loop and the pointer increment are **gone** — the compiler vectorized them.
+There is no old/new pointer variable left to name. This is the counterpart to
+symptom A: sometimes the decompiler is wrong, and sometimes the source-level
+structure simply no longer exists in the machine code.
+
+`branchy` is folded too: `param_2 << 1` is the optimizer's simplification of the
+two branches. To produce a real merge-group symptom you need a case the
+optimizer cannot fold; the refine scripts handle it the same way, but this
+example shows you must first confirm there is something left to recover.
 
 ## Symptom C: an unassigned local after a CALL
 
 `src/call.cpp`:
 
 ```cpp
-struct Result { int a, b, c, d; };
+struct Result { int a, b, c, d; };   // 16 bytes
 Result produce(int mode);
-int consume() { Result r = produce(1); return r.a + r.d; }
+int consume(int mode) { Result r = produce(mode); return r.a + r.d; }
 ```
 
-The caller sprouts `extraout_*`, looking "uninitialized".
+The real decompiler output:
+
+```c
+int consume(void)
+{
+  int iVar1;
+  int extraout_var;
+
+  iVar1 = produce();
+  return extraout_var + iVar1;
+}
+```
+
+`extraout_var` looks like an uninitialized local, and the call shows no return
+type. The `consume` Listing explains it:
+
+```asm
+10487c  bl 0x001049b0          ; call produce
+104880  lsr x8, x1, #0x20      ; r.d is the HIGH 32 bits of x1
+104884  add w0, w8, w0         ; r.a (w0) + r.d
+104888  ldp x29,x30,[sp], #0x10
+10488c  ret
+```
+
+A 16-byte struct is returned **in x0:x1**, not through x8. `r.a` is `w0`; `r.d`
+is the high word of `x1`. The decompiler did not model the return type, so it
+exposed the incoming `x1` as `extraout_var`. The fix is to type `produce` as
+returning `Result`.
 
 ## Classify: which root cause are these?
 
-**Mis-representation.** In every case, optimization shattered the machine
-structure and the decompiler **merged or named it wrong**. The information is
-present and fixable. But you must read the P-code first; do not guess by name.
+**Mis-representation.** In A and C, optimization shattered the machine structure
+and the decompiler **merged or failed to model it**; the information is present
+and fixable. In B, the source structure was removed by the optimizer, so there
+is nothing to recover — recognize that before you start renaming. In every case,
+read the raw/high P-code first; do not guess by name.
 
 ## Find the evidence: read raw/high P-code first
 
@@ -141,13 +253,47 @@ value with another existing semantic name.
 
 ### CALL output
 
-Confirm the output-parameter/hidden-return ABI and the callee's actual STORE
-range; build the caller's output stack region as the correct struct, remove the
-overlapping fragment locals, and rebind. **Do not invent initial values for
-`extraout_*`.** If the callee is proven to write the whole region while the
+Confirm the return ABI and the callee's actual write range, then give the callee
+the right return type. For the `produce`/`consume` example, importing `Result`
+and setting the prototypes:
+
+```python
+set_function_prototype(function_address="0x4840", prototype="Result produce(int mode)")
+set_function_prototype(function_address="0x4874", prototype="int consume(int mode)")
+```
+
+turns
+
+```c
+int consume(void)
+{
+  int iVar1;
+  int extraout_var;
+  iVar1 = produce();
+  return extraout_var + iVar1;
+}
+```
+
+into
+
+```c
+int consume(int param_1)
+{
+  Result RVar1;
+  RVar1 = produce(param_1);
+  return RVar1.d + RVar1.a;
+}
+```
+
+`extraout_var` is gone and the fields are named. **Do not invent initial values
+for `extraout_*`.** If the callee is proven to write the whole region while the
 caller SSA still does not express the cross-CALL write, record "which object the
 callee writes -> which reads the caller performs" and translate along that memory
 data flow.
+
+Note the parameter is still named `param_1` even after the prototype fix:
+**type recovery and variable naming are separate write-backs.** Use
+`set_variables` to rename it once the data flow confirms its meaning.
 
 ## Naming is part of delivery
 
@@ -172,15 +318,17 @@ final C.**
 
 ## If you skip this
 
-- Stack slots: the logging stage corrupts matrix data; a time add becomes `text + timestamp`;
-- Registers: the old-address read and pointer update order are reversed;
-- SSA: two runtime values are written into one wrong object;
-- CALL: you treat `extraout_*` as uninitialized and invent an initial value.
+- Stack slots: the logging stage reads as matrix data; the C shows one `local_40`
+  serving three objects, and the native types drift;
+- Registers/SSA: two runtime values are written into one wrong object;
+- CALL: you treat `extraout_*` as uninitialized and invent an initial value, or
+  you lose the result fields entirely.
 
 ## Chapter checklist
 
-- [ ] All three stages read/write the correct union members, with correct derived types
-- [ ] `p++`'s old/new pointers are two names, matching the Listing's order
-- [ ] `branchy`'s two merge groups are named separately
-- [ ] `consume`'s output stack region is a struct, with no invented `extraout_*` values
+- [ ] Source compiles with `pwsh -File tutorial/build.ps1 03-broken-structure`
+- [ ] You can point at the shared `Stack[-0x40]` in `reuse_stack`
+- [ ] You can explain why `walk` has no pointer variable to recover
+- [ ] `consume`'s `extraout_var` becomes `RVar1.d + RVar1.a`
+- [ ] You can state which symptom needs a union and which needs a prototype fix
 - [ ] Business locals have semantic names, and unresolved items are marked "incomplete"
