@@ -1,2 +1,13 @@
 __pycache__/
 *.py[cod]
+
+# Tutorial chapters: compiled shared objects and scratch build output.
+tutorial/build/
+
+# Local, machine-specific state of the tutorial Ghidra instance. The copied
+# install lives outside this repo under C:\tools\ghidra-tutorial. Only the
+# portable pieces (ghidra_scripts/, tutorial/, docs) belong in Git.
+ghidra-tutorial/user/
+ghidra-tutorial/cache/
+ghidra-tutorial/projects/
+ghidra-tutorial/seed/

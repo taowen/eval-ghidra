@@ -88,6 +88,21 @@ the image base Ghidra uses for most ELF shared objects; set it if yours differs.
 - Unknown or missing parameters stop the snippet before anything is sent, so a
   typo cannot silently hit the wrong tool.
 
+## Tutorial and scripts
+
+This repository also carries a tutorial that uses `eval-ghidra` to teach how to
+turn unreadable decompiler output into trustworthy C:
+
+- [`TUTORIAL.md`](TUTORIAL.md) — why decompiler output is hard to read (the root
+  causes) and how to fix it, chapter by chapter.
+- [`tutorial/`](tutorial/) — per-chapter notes, each following
+  *phenomenon → classify the root cause → find evidence → correct it*.
+- [`ghidra_scripts/`](ghidra_scripts/) — refine/audit scripts for
+  `run_ghidra_script`, with a [README](ghidra_scripts/README.md) that separates
+  reusable scripts from project-specific examples.
+- [`start-tutorial-ghidra.ps1`](start-tutorial-ghidra.ps1) — launch a second,
+  independent Ghidra instance (own settings directory and port) for the tutorial.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
