@@ -1,75 +1,63 @@
-# 07 — Verification and evidence scope: how you know it is really fixed
+# 07 — A result that looks right is not a verified result
 
-Every earlier chapter *changes* something. This chapter answers "how do you know
-it is right, and what does that 'right' cover".
+**Task**: you have refined a function. Before you trust your reimplementation, you
+need to answer two questions: *did it actually become correct?* and *how much of
+the program does "correct" cover?*
 
-## The core problem
+## What the trap looks like
 
-The biggest trap in refinement is not a wrong edit; it is **mistaking "looks
-right" for "is right"**:
+- The refine tool printed `succeeded`. That only means the annotation was stored.
+- You emulated a leaf and got the number you expected. The emulator may have
+  supplied the dependency for you.
+- Your reimplementation matches the original on the cases you tried. The cases you
+  did not try are where it differs.
 
-- A tool prints `succeeded`, but that only means "it was written";
-- A leaf function is bit-exact, but the whole chain is not connected;
-- Emulation produces the expected number, but it cannot speak for the device.
+None of these is verification. This chapter is about making the difference
+between "looks right" and "is right" concrete.
 
-So verification must answer two questions: **how to verify**, and **what the
-verification does and does not prove**.
-
-## Verification layers: each proves only its own layer
-
-| Layer | Proves | **Cannot** replace |
-| --- | --- | --- |
-| Direct function differential | Business result under given inputs and dependency contracts | Uncovered branches, dependency implementations, concurrent integration |
-| Leaf replay | Independent function replay from a dedicated recording | Live inputs, real scheduling, full rendering |
-| Official replay comparison | Same-input/same-query comparison | Actual GPU, compositor, dynamic display |
-| Actual drawing | Pose production, initialization, GPU pixels | Live frame select, scan instant, physical scanout |
-| On-device acceptance | Real threads, submission, compositor, head movement | Optical scanout not actually inspected |
-
-**A PASS must always be reported with what it covers.** A local PASS cannot fill a
-global gap.
-
-## Method A: P-code emulation (and its real limits)
+## What the tool can and cannot do here
 
 ```bash
 python3 eval-ghidra.py --help emulate_function
 ```
 
-**Connecting to the tutorial instance, this tool does not work on AArch64.** Its
-implementation requires an x86 register (`ESP`), so every attempt fails with:
+On this tutorial's AArch64 target, `emulate_function` **does not work at all**.
+Its implementation requires the x86 register `ESP`, so every call fails:
 
 ```text
 Emulation failed: Undefined register: ESP
 ```
 
-That failure is the lesson, not a detour. The tool's value depends on a language
-assumption that does not hold for the target. When you do have a supported
-language, it gives:
+That failure is the first lesson: a tool's usefulness depends on an assumption
+about the input. When the assumption does not hold, the tool fails — loudly, which
+is the good outcome. Do not mistake "the tool ran" for "the target was verified".
+
+When you do have a supported language, emulation gives you:
 
 | You get | You do not get |
 | --- | --- |
-| Scalar-only register results after a run | AArch64/NEON execution semantics |
-| Whether control returns normally | Dependency behavior (e.g. libm) |
+| Register results for scalar-only code | AArch64/NEON execution semantics |
+| Whether control returns normally | Real dependency behavior (libm, syscalls) |
 | Whether the ABI is modeled as you expect | Threads, GPU, timing |
 
-Two habits, whichever emulator you use:
+If the emulator provides a library function for you, you have **not** verified the
+real dependency. Record that limitation instead of accepting the result.
 
-- Emulation is a **fast cross-check for pure leaves**, never device evidence;
-- If the emulator supplies a library function (common for libm), you have not
-  verified the real dependency — record that limitation.
+## What actually verifies a computation
 
-## Method B: same-input differential (the real workhorse)
+Chapter 06 gave you the perfect setup: two builds whose C is almost identical but
+whose machine code differs. So verify the way the real project does — a
+**same-input differential that compares bits**.
 
-This is what chapter 06's two builds let you do concretely. The two Listings
-differ (`fmadd` vs `fmul`+`fadd`), so take the same source expression and compare
-the two results bit for bit. `src/differential.c` does exactly that on the host:
+`src/differential.c` takes the exact `a*b+c` expression and computes it two ways:
+one rounding (FMA) and two roundings (mul then add). Same inputs, compare every
+bit.
 
 ```bash
 g++ -O2 -std=c++17 -o build/chapter07-differential.exe \
     tutorial/07-verify-and-scope/src/differential.c -lm
 ./build/chapter07-differential.exe
 ```
-
-Real output:
 
 ```text
 case1    a=1.00000012 b=1.00000095 c=-1
@@ -83,43 +71,65 @@ case2    a=1.00000012 b=1.00000203 c=-1
          bit-identical = NO
 ```
 
-One ULP apart. This is why "the C looks the same" is not evidence: the
-differential compares **bits**, and it fails.
+**The differential fails**, and that is the answer you needed. "The C is
+equivalent" was never evidence; the bit comparison is.
 
-The rules that make a differential meaningful:
+### Rules that make a differential meaningful
 
-- The two sides use **independent fixtures that share no mutable state**;
-- Tests bind existing types instead of rewriting a structure list that drifts;
-- Dependencies have three execution modes: run the official, replay captured
-  interactions, run the translation;
-- **Test the parent first, then replace dependencies one by one**;
-- Replay must check targets, arguments, and call order **before** supplying
-  return values and side effects — **you cannot pour the parent's expected final
-  state into the input** (that makes the test always pass while proving nothing).
+These are the rules the real project uses, and they exist because each one has
+been violated at some point:
 
-## A static cross-check that does work here
+- The official and translated sides run from **independent fixtures that share no
+  mutable state**.
+- Tests bind the **existing types** instead of re-declaring a structure list that
+  drifts from the real one.
+- Dependencies run in one of three modes: execute the official implementation,
+  replay a captured interaction, or execute your translation. Which mode was used
+  is part of the result.
+- **Test the parent first, then replace its dependencies one at a time.**
+- Replay must check targets, arguments, and call order **before** producing return
+  values and side effects. **You may not pour the parent's expected final state
+  into the input** — that makes the test pass while verifying nothing.
+
+## A static cross-check that works on any target
 
 ```python
 run_ghidra_script(script_name=r"...\ghidra_scripts\AuditAarch64ResultUse.java",
                   args="<trueEntryVA>", capture_output=True)
 ```
 
-Checks whether the W0/x8 return result is consumed correctly by the caller,
-paired with the chapter 02 ABI fix.
+Checks whether a W0/x8 return value is actually consumed by its caller, which
+pairs with the chapter 02 ABI fix.
 
-`analyze_function_completeness`: handle fixable items; **explain every accepted
-item**, and do not wave it through with a score or "tool limitation".
+`analyze_function_completeness`: fix what it can, and **explain every item you
+accept** — never wave it through because a score is high or because "the tool has
+limitations".
+
+## Evidence has scope
+
+No verification proves more than its own layer.
+
+| What you verified | What it proves | What it does **not** prove |
+| --- | --- | --- |
+| One function, given inputs | That function's behavior for those inputs | Uncovered branches, its dependencies |
+| A leaf replay | That leaf, from a recording | Live inputs, scheduling |
+| Official replay comparison | Same-input equivalence | GPU, compositor, display |
+| Actual drawing | Pose/GPU output | Frame selection, physical scanout |
+| On-device run | Threads, submission, display | Optical scanout not inspected |
+
+**Every PASS must be reported with what it covers.** A local PASS cannot stand in
+for a global one.
 
 ## If you skip this
 
-- You treat emulation output as device behavior and miss NEON/timing differences;
-- You use a local function PASS to claim the whole chain passes;
-- You pour expected output into the parent so the test always passes and proves nothing;
-- You accept "the C looks equivalent" without a bit-level comparison.
+- You accept a passed test that never exercised the failing branch.
+- You use a local function PASS to claim the whole chain works.
+- You pour expected output into the parent and the test always passes.
+- You accept "the C looks equivalent" without ever comparing bits.
 
 ## Chapter checklist
 
 - [ ] You ran `emulate_function` and can explain its `ESP` failure on AArch64
 - [ ] You built and ran `differential.c` and saw `bit-identical = NO`
-- [ ] You can state, for one PASS, exactly what it covers and what it does not
+- [ ] For one PASS, you can state its exact coverage and its gaps
 - [ ] You can explain why "identical C" is not evidence

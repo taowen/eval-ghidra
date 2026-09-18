@@ -1,30 +1,10 @@
-# 01 — Missing information: the type is not in the binary
+# 01 — The type is not in the binary
 
-> **Root cause 2**: the `struct` you wrote, the field names, the array/nested
-> layout — all **gone** after compilation. Only registers and bytes remain. The
-> decompiler does not know a `Pose` was there, so it can only name it
-> `undefined8`. **No tool can conjure this information; you supply it from
-> evidence.**
+**Task**: reimplement `pose_z` and `bump` in your own C++ so they behave exactly
+like the library. Before you can do that, you need to answer: what does `pose_z`
+take, and what does it return?
 
-## Symptom
-
-`src/layout.cpp`:
-
-```cpp
-struct Vec3 { float x, y, z; };
-struct Pose { Vec3 position; float q[4]; };     // 28B
-struct Node {
-    Node*    next;    // +0x00
-    Pose     pose;    // +0x08
-    unsigned flags;   // +0x24
-    unsigned char kind; // +0x28
-};
-
-float pose_z(const Pose* p) { return p->position.z; }
-void  bump(Node* n)         { n->flags |= 1u; }
-```
-
-The real decompiler output (`batch_decompile(functions='pose_z,bump')`):
+## What the decompiler shows you
 
 ```c
 undefined4 pose_z(long param_1)
@@ -43,110 +23,121 @@ void bump(long param_1)
 }
 ```
 
-Problems:
-- `param_1` is a bare `long`; nothing says it is a `Pose *` or `Node *`;
-- `bump` reads `+0x28` and `+0x24` as char/uint with no names;
-- `Pose`'s `x/y/z/q` are gone, and field xrefs are empty;
-- Return type is `undefined4`, not `float`.
+## What this costs you if you trust it
 
-## Classify: which root cause is this?
+This output is not wrong, but it is unanswerable. If you translate it directly,
+several plausible readings are all wrong:
 
-**Missing information.** Field names, types, even the fact that this is a
-struct, are not in the binary. So you **cannot "recover" it, only "supply" it**.
-Refinement's goal is to add the layout you can confirm from the Listing as a
-single type header, and to mark clearly which fields are evidenced and which
-remain unknown.
+- **`param_1` is `long`, so the offset is literal.** You write
+  `*(uint32_t *)(p + 8)`. If you ever declare `p` as anything but a byte pointer,
+  `p + 8` now means "8 elements forward", not "8 bytes". The C gives you no way to
+  know the element size.
+- **`+0x28` is a `char`, `+0x24` is a `uint`.** You invent field names like `mode`
+  and `state`. The real source called them `kind` and `flags`. Your reviewer, or
+  future you, cannot connect your names to anything in the binary.
+- **Return type `undefined4`.** You pick `int`. It is actually `float`. It
+  compiles, and it silently breeds rounding differences everywhere it is used.
 
-## Find the evidence
+The decompiler did not make a mistake. It reported every byte it saw. What it
+could not tell you is the **shape** of the data, because that shape was destroyed
+at compile time.
 
-The Listing has byte-level facts. The real Listing captured from the tutorial
-instance:
+## Why the shape is gone
+
+This is **missing information**. Concretely, the source was:
+
+```cpp
+struct Vec3  { float x, y, z; };
+struct Pose  { Vec3 position; float q[4]; };     // 28 bytes
+struct Node {
+    Node*         next;    // +0x00
+    Pose          pose;    // +0x08
+    uint32_t      flags;   // +0x24
+    uint8_t       kind;    // +0x28
+};
+
+float pose_z(const Pose* p) { return p->position.z; }
+void  bump(Node* n)         { n->flags |= 1u; }   // if kind == 3
+```
+
+After compilation: no `struct`, no field names, no `float` — only offsets. No
+tool can put them back. **You supply them from the instructions.**
+
+## What the machine actually says
+
+The Listing is the fact. Here it is, from the tutorial instance:
 
 ```asm
 ; pose_z
-104750  ldr s0,[x0, #0x8]
+104750  ldr s0,[x0, #0x8]      ; load a 4-byte float from x0+8
 104754  ret
 
 ; bump
-104758  ldrb w8,[x0, #0x28]
-10475c  cmp w8,#0x3
+104758  ldrb w8,[x0, #0x28]    ; 1-byte load at +0x28
+10475c  cmp  w8,#0x3
 104760  b.ne 0x00104774
-104764  ldr w8,[x0, #0x24]
-104768  orr w8,w8,#0x1
-10476c  str w8,[x0, #0x24]
+104764  ldr  w8,[x0, #0x24]    ; 4-byte load at +0x24
+104768  orr  w8,w8,#0x1        ; set bit 0
+10476c  str  w8,[x0, #0x24]    ; 4-byte store at +0x24
 104770  ret
-104774  str wzr,[x0, #0x24]
+104774  str  wzr,[x0, #0x24]   ; store 0 at +0x24
 104778  ret
 ```
 
-**Rule: the decompiler's `p + N` is already scaled by element size; you cannot
-copy N directly.** Build the offset table from the Listing's "base + byte
-displacement + width".
+Read the base + displacement + width, and you get the layout:
 
-| Instruction | Base | Byte offset | Width | Conclusion |
+| Instruction | Base | Byte offset | Width | Meaning |
 | --- | --- | --- | --- | --- |
-| `ldr s0,[x0,#0x8]` | `x0` | +0x08 | 4B float | `Pose.position.z` |
-| `ldrb w8,[x0,#0x28]` | `x0` | +0x28 | 1B | `Node.kind` |
-| `ldr w8,[x0,#0x24]` | `x0` | +0x24 | 4B | `Node.flags` |
+| `ldr s0,[x0,#0x8]` | `x0` | +0x08 | 4B float | a float field at +8 |
+| `ldrb w8,[x0,#0x28]` | `x0` | +0x28 | 1B | a one-byte field |
+| `ldr w8,[x0,#0x24]` | `x0` | +0x24 | 4B | a four-byte field |
 
-Also distinguish three kinds of pointer: object base, internal member (nested
-struct), and secondary-base pointer.
+> **The decompiler's `+N` is already scaled by element size.** `param_1 + 8` in
+> the C means byte +8 here only because the decompiler kept a byte form. In other
+> functions you will see `param_1[1]` for the same byte offset. **Reconcile with
+> the Listing, never with the C text.**
 
-> **Note on `p + N` scaling**: with the default `undefined8 *` parameter,
-> `pose_z`'s `param_1 + 8` is already a byte offset here only because the
-> decompiler chose to keep the byte form; in other functions you will see
-> `param_1[1]` or `(param_1 + 1)` meaning byte +8. Always reconcile with the
-> Listing, never with the C text.
+## Fix it: supply the type, then use it
 
-## Correction
+### 1. Write one canonical type header
 
-### 1. Write a single type header (`tutorial-types/chapter01-layout.h`)
-
-Convention: keep canonical structs in a standalone `*-layout.h` with **no
-`#include`**. Do not build an umbrella header, and do not let a temporary Ghidra
-struct become a second source of truth.
+No `#include`, one header per module. Do not create the type inside Ghidra — then
+there are two sources of truth that drift apart.
 
 ```c
 typedef struct Vec3 { float x; float y; float z; } Vec3;
 typedef struct Pose { Vec3 position; float q[4]; } Pose;
 typedef struct Node {
-    void*    next;      /* +0x00 */
-    Pose     pose;      /* +0x08 */
-    unsigned flags;     /* +0x24 */
-    unsigned char kind; /* +0x28 */
-    char _pad[7];       /* to +0x30 */
+    void*         next;  /* +0x00 */
+    Pose          pose;  /* +0x08 */
+    unsigned      flags; /* +0x24 */
+    unsigned char kind;  /* +0x28 */
+    char          _pad[7];
 } Node;
 ```
 
-### 2. Pre-check the size before importing
+### 2. Pre-check, then import
 
 ```bash
 python3 experiments/ar-glass-lib-3dof/messy/tools/audit-ghidra-type-includes.py \
   tutorial-types/chapter01-layout.h
 ```
 
-The importer rejects modules over 65536 characters; split a large one into
-smaller modules along real dependencies.
-
-### 3. Import
-
 ```python
-switch_program(program="<chapter>.so")
+switch_program(program="01-missing-information.so")
 run_ghidra_script(script_name=r"...\ghidra_scripts\ImportTypes.java",
                   args=r"...\tutorial-types\chapter01-layout.h",
                   timeout_seconds=300, capture_output=True)
 ```
 
-### 4. **Re-verify actual size and offsets** (critical; parsing is not enough)
+### 3. Verify the imported layout
+
+Parsing succeeding proves nothing. Read the layout back:
 
 ```python
-run_ghidra_script(script_name=r"...\ghidra_scripts\InspectType.java",
-                  args="Pose", capture_output=True)
-run_ghidra_script(script_name=r"...\ghidra_scripts\InspectType.java",
-                  args="Node", capture_output=True)
+run_ghidra_script(script_name=r"...\ghidra_scripts\InspectType.java", args="Pose")
+run_ghidra_script(script_name=r"...\ghidra_scripts\InspectType.java", args="Node")
 ```
-
-The real `InspectType` output after import:
 
 ```text
 /Pose size=28 align=4
@@ -161,17 +152,12 @@ The real `InspectType` output after import:
 0029 size=7 _pad                              char[7]
 ```
 
-These match the source exactly (`Pose`=28, `Node`=48, `pose` at +8, `flags` at
-+0x24, `kind` at +0x28). On the native side, also add `static_assert(sizeof(...))`
-and `offsetof` assertions.
+This matches the source: `Pose` 28B, `Node` 48B, `flags` at +0x24, `kind` at
++0x28.
 
-**Why the re-check matters**: Ghidra's fields can be right while the native side
-has already shifted from a missing padding — check both.
+### 4. Give the function a prototype that uses the type
 
-### 5. **Give the function a prototype that uses the type**
-
-This is the step that surprises people. Right after importing, the C has **not
-changed**:
+**This is the step people miss.** Right after the import, the C has not changed:
 
 ```c
 undefined4 pose_z(long param_1)
@@ -180,16 +166,16 @@ undefined4 pose_z(long param_1)
 }
 ```
 
-The field types exist in the Data Type Manager, but the decompiler does not know
-`param_1` points at a `Pose`. Importing a type describes data; it does not tell
-the decompiler what the function receives. So set the prototype:
+The `Pose` type now exists in the Data Type Manager, but nothing told the
+decompiler that `param_1` *is* a `Pose *`. Importing a type describes data; it
+says nothing about what a function receives. So set the prototype:
 
 ```python
 set_function_prototype(function_address="0x4750", prototype="float pose_z(Pose *p)")
 set_function_prototype(function_address="0x4758", prototype="void bump(Node *n)")
 ```
 
-Now the C becomes readable:
+## What changes
 
 ```c
 float pose_z(Pose *p)
@@ -208,23 +194,23 @@ void bump(Node *n)
 }
 ```
 
-> **Lesson**: type import and prototype are two separate write-backs. Neither
-> alone fixes the C. This is the same split chapter 02 is about, seen from the
-> layout side: the layout lives in the type, the ABI lives in the prototype.
+Now the task is doable: you can see the parameter type, the return type, and
+every field. **Type import and prototype are two separate write-backs — neither
+alone fixes the C.** (Chapter 02 is about the same split from the ABI side: the
+layout lives in the type, the call convention lives in the prototype.)
 
 ## If you skip this
 
-- You treat `param_1 + 0x28` as "some char at an offset" and never learn it is `Node.kind`;
-- Importing types but not fixing the prototype leaves the C unchanged — a common
-  false sense of progress;
-- Missing padding: Ghidra is right but native is shifted — self-tests can still
-  "pass" because every internal access shares the same wrong layout;
-- Every function records fields from its own guess, producing several layouts
-  that drift apart.
+- You guess field names and invent a wrong `Pose` layout; nothing in the binary
+  can later correct you, because there is no name to check against.
+- You import the type, see no change in the C, and conclude the tool failed —
+  when you simply had not set the prototype.
+- Your native struct is missing padding that Ghidra's has: both sides compile,
+  every internal test passes, and the struct is still the wrong size.
 
 ## Chapter checklist
 
-- [ ] Source compiles with `pwsh -File tutorial/build.ps1 01-missing-information`
-- [ ] `Pose` reads back as 28B, `Node` as 48B, with matching offsets
-- [ ] `pose_z`'s C becomes `(p->position).z`, `bump`'s shows `n->flags`/`n->kind`
-- [ ] You can explain why importing the type alone did not change the C
+- [ ] `pwsh -File tutorial/build.ps1 01-missing-information` compiles
+- [ ] `Pose` reads back as 28B, `Node` as 48B, offsets matching the source
+- [ ] `pose_z` becomes `(p->position).z`; `bump` shows `n->flags`/`n->kind`
+- [ ] You can explain why importing the type alone changed nothing

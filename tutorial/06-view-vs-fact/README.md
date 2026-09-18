@@ -1,29 +1,16 @@
-# 06 — View distortion: the decompiled C is not numerically equivalent
+# 06 — The C looks the same; the machine code does not
 
-> **The direct manifestation of root cause 1**: the decompiler's correctness
-> criterion is "compiles back to equivalent instructions", not "readable" or
-> "bit-for-bit identical". It shows `FMLA` as `a*b+c`, `.2D` as a scalar, and
-> `B.PL` as `>=` — those are **the view it gives you**, not the instructions.
-> Copy that view and you produce "mathematically equivalent but not bit-exact"
-> results.
+**Task**: match the library's arithmetic exactly. Floating-point results must be
+bit-for-bit identical, because a one-ULP difference compounds through a render
+pipeline into visible artifacts.
 
-## Symptom
+## What the decompiler shows you
 
-`src/math.cpp`:
-
-```cpp
-float fused(float a, float b, float c) { return a*b + c; }  // FMLA or FMUL+FADD?
-float reduce4(const float* v)          { return v[0]+v[1]+v[2]+v[3]; }
-int   ge_nan(float a, float b)         { return a >= b; }
-float pick(float a, float b, int c)    { return c ? a : b; }
-```
-
-Build the same source twice, once with the default `-ffp-contract=fast` and once
-with `-ffp-contract=off`, then compare. The decompiler renders both almost
-identically:
+Build the same source twice — once with the default `-ffp-contract=fast`, once
+with `-ffp-contract=off` — and decompile both:
 
 ```c
-/* default (fast) build */
+/* default build */
 float fused(float param_1, float param_2, float param_3)
 {
   return param_3 + param_2 * param_1;
@@ -36,19 +23,8 @@ float fused(float param_1, float param_2, float param_3)
 }
 ```
 
-Both read as "a*b+c", and the only visible difference is operand order. But the
-Listings are not the same at all:
-
-```asm
-; default: fused -> FMADD (one rounding)
-4668: 1f010800  fmadd s0, s0, s1, s2
-
-; -ffp-contract=off: FMUL + FADD (two roundings)
-4668: 1e210800  fmul  s0, s0, s1
-466c: 1e222800  fadd  s0, s0, s2
-```
-
-The other three show more view distortion:
+Both read as "a*b+c". The only visible difference is operand order, which looks
+like a decompiler quirk. Other functions look equally harmless:
 
 ```c
 float reduce4(float *param_1)
@@ -58,119 +34,137 @@ float reduce4(float *param_1)
 
 bool ge_nan(float param_1, float param_2)
 {
-  return param_2 <= param_1;          /* Ghidra flipped the comparison */
+  return param_2 <= param_1;          /* flipped */
 }
 
 undefined4 pick(undefined4 param_1, undefined4 param_2, int param_3)
 {
-  if (param_3 != 0) {                 /* shown as a branch ... */
+  if (param_3 != 0) {                 /* looks like a branch */
     param_2 = param_1;
   }
   return param_2;
 }
 ```
 
-...while the Listing says:
+## What this costs you if you trust it
+
+The two `fused` bodies are the trap. You reimplement from one of them:
+
+- You write `return a * b + c;` and it is correct for one build and wrong for the
+  other. The C does not tell you which.
+- You assume the compiler picks the same rounding you would. It does not: one
+  version rounds once (`fmadd`), the other rounds twice (`fmul` + `fadd`).
+
+For `ge_nan` and `pick`, copying the C is also misleading:
+
+- `return param_2 <= param_1;` is a *rewritten* comparison. You cannot tell from
+  the C whether the NaN case is handled the way the original did.
+- `pick` decompiles as a branch. If you reimplement it as a branch, you introduce
+  a control-flow path the original never had.
+
+## Why the C cannot show you
+
+This is **view distortion**. Ghidra's C is a high-level rendering: it chooses
+readable operators (`*`, `+`, `<=`) and control structures (`if`) that reproduce
+the *value*, but not the *rounding* or the *instruction*. Bit-exactness lives in
+the instruction stream, and the C has thrown that away.
+
+The decompiler's contract is "compiles back to equivalent instructions", and
+`a*b+c` does compile to either form depending on the compiler flags. So the C is
+not wrong; it is simply not precise enough for this task.
+
+## What the machine actually says
+
+The Listings are the fact:
 
 ```asm
-; ge_nan: ordered GE via cset (false on NaN)
-4688: 1e212000  fcmp s0, s1
-468c: 1a9fb7e0  cset w0, ge
+; fused -- default: one rounding
+4668: 1f010800  fmadd s0, s0, s1, s2
 
-; pick: a conditional SELECT, not a branch
-4694: 7100001f  cmp  w0, #0x0
-4698: 1e200c20  fcsel s0, s1, s0, eq
+; fused -- -ffp-contract=off: two roundings
+4668: 1e210800  fmul  s0, s0, s1
+466c: 1e222800  fadd  s0, s0, s2
+```
 
-; reduce4: strictly left-to-right association
+```asm
+; reduce4 -- strictly left-to-right
 4670: 2d400400  ldp  s0, s1, [x0]
 4674: 1e212800  fadd s0, s0, s1
 4678: 2d410801  ldp  s1, s2, [x0, #0x8]
 467c: 1e212800  fadd s0, s0, s1
 4680: 1e222800  fadd s0, s0, s2
+
+; ge_nan -- ordered GE, false on NaN
+4688: 1e212000  fcmp s0, s1
+468c: 1a9fb7e0  cset w0, ge
+
+; pick -- a conditional SELECT, not a branch
+4694: 7100001f  cmp  w0, #0x0
+4698: 1e200c20  fcsel s0, s1, s0, eq
 ```
 
-Problems:
-- `a*b+c` does not reveal whether it is fused or separate; **the C is identical
-  while the machine code is not**;
-- The reduction appears as a running sum, but you must confirm the association
-  order (here strictly left-to-right) rather than assume it;
-- `a >= b` was rendered as `b <= a` — same truth value, different text, so the C
-  text cannot be copied literally;
-- `pick` looks like a branch but is a branchless select.
+Read off the facts, not the C:
 
-## Classify: which root cause is this?
+- `fused`: fused in one build, separate in the other. **Same C, different bits.**
+- `reduce4`: strictly left-to-right association — do not "simplify" it.
+- `ge_nan`: `cset ge` is the ordered predicate; NaN gives false. The C says
+  `b <= a`, which happens to match, but you had to check.
+- `pick`: `fcsel` is a select; there is no branch.
 
-**View distortion.** The instructions are the fact; the C is a view. **Go by the
-Listing, not the C.**
+## Verify it with a differential
 
-## Find the evidence: Listing + the handbook's comparison table
+Do not take the Listing's word alone. Build both forms on the host and compare
+bit patterns (`src/differential.c`):
 
-| Listing fact | Translation action and check |
-| --- | --- |
-| FMUL followed by FADD vs FMLA/FMADD | Express non-fused operations separately and disable implicit contraction; use the matching intrinsic where fused. Inspect the real optimized output for unexpected and missing FMA |
-| `.2D` vs scalar D, lane moves | Record each lane's input, result, and store offset; keep confirmed vector patterns in the native code — **do not change the operation tree because the C looks scalar** |
-| FADDP / multi-step sums | Write the reduction as a parenthesized tree; **do not swap in a mathematically equivalent association order** |
-| FCMP / FCCMP followed by a branch | List branches for ordered and unordered separately; **`B.PL` includes unordered and must not be translated unconditionally to `a >= b`** |
-| FSQRT, exact rodata, bit select | Check whether an extra library call is generated; store constants by original bit pattern/hex float; a mask is a bit select |
-| Integer multiply-add, division, timing units | Record width, signedness, truncation order, and units; implement modular arithmetic with well-defined unsigned bit operations to avoid signed overflow |
-| Atomic reads/writes, locks, callbacks | Recover from the actual LDR/LDAR, STR/STLR, RMW, and call boundary; **do not add memory ordering, locks, or change publication timing for safety** |
-
-## Correction
-
-1. **First make Ghidra's types and fields correct, then edit the native translation**;
-2. Record against the Listing line by line: fused/non-fused, reduction tree,
-   `FCMP` branch, rodata bit patterns, masks;
-3. Use `get_function_pcode` and the raw Listing to separate "what the compiler
-   generated" from "what the decompiler displays";
-4. Inspect the real assembly product:
-
-   ```bash
-   llvm-objdump -dr --demangle <object>
-   ```
-
-   A single-file compile only proves that translation unit compiles; full APK
-   linking, function verification, and device behavior are reported **separately**.
-
-### Reproducing the two builds
-
-`build.ps1` produces the default build. The no-contraction variant is a second
-compile of the same source:
-
-```powershell
-$ndk = "$env:ANDROID_NDK_HOME\toolchains\llvm\prebuilt\windows-x86_64\bin"
-$exe = "$ndk\clang++.exe"
-@("--target=aarch64-linux-android29","-O2","-shared","-fPIC","-fno-rtti",
-  "-fno-exceptions","-fvisibility=default","-ffp-contract=off",
-  "-o","C:/games/eval-ghidra/tutorial/build/06-nocontract.so",
-  "C:/games/eval-ghidra/tutorial/06-view-vs-fact/src/math.cpp") |
-  Set-Content tutorial/build/06-nocontract.rsp -Encoding ascii
-& $exe "@tutorial/build/06-nocontract.rsp"
+```bash
+g++ -O2 -std=c++17 -o build/chapter07-differential.exe \
+    tutorial/07-verify-and-scope/src/differential.c -lm
+./build/chapter07-differential.exe
 ```
 
-In the translated source, fuse only where the Listing shows `fmadd`/`fmla`, and
-disable implicit contraction for the non-fused sites. The two builds above are
-the control: identical C, different bits.
+```text
+case1    a=1.00000012 b=1.00000095 c=-1
+         fused = 1.07288372e-06  bits=0x35900001
+         split = 1.07288361e-06  bits=0x35900000
+         bit-identical = NO
+```
 
-## Naming is also checked here
+One ULP apart. That is the whole point of chapter 07: "the C looks equivalent" is
+not evidence. The differential compares bits.
 
-A field name describes the value ultimately written at that offset, not the
-adjacent `dVar` name. Matrices must state row/column, transpose, vector
-direction, and output layout; quaternions must state xyzw/wxyz, multiplication
-order, and signs. Bare `pow`, gamma, normalization, extra null protection, or
-"equivalent optimization" **must all have official evidence**.
+## Fix it
+
+In the native translation:
+
+- Fuse only where the Listing shows `fmadd`/`fmla`, and disable implicit
+  contraction for the sites that show `fmul` + `fadd`.
+- Write the reduction as the parenthesized tree matching the Listing's order.
+- Reproduce the condition predicate exactly (`cset ge`, not a C `>=` you hope
+  compiles the same way).
+- Use a select for `pick`, not a branch.
+- Inspect the real object to confirm your translation produced the instruction you
+  intended:
+
+  ```bash
+  llvm-objdump -dr --demangle <object>
+  ```
+
+  A single-file compile proves only that the translation unit compiles; full
+  linking and device behavior are separate claims.
 
 ## If you skip this
 
-- Copying `a*b+c` omits an FMA where fusion is required (or adds one);
-- Changing the reduction order makes the last bit differ;
-- Translating `B.PL` unconditionally to `a >= b` makes NaN inputs take the wrong branch;
-- Scalarizing NEON changes lanes/rounding and affects the final pixels.
+- You fuse where the original did not (or vice versa) and results differ by one
+  ULP, then diverge further through the pipeline.
+- You reorder a reduction because "addition is associative" and change the result.
+- You translate `ge`/`b.pl` without checking the predicate and get NaN handling
+  wrong.
+- You turn a `fcsel` into a branch and change the control flow.
 
 ## Chapter checklist
 
-- [ ] Source compiles with `pwsh -File tutorial/build.ps1 06-view-vs-fact`
+- [ ] `pwsh -File tutorial/build.ps1 06-view-vs-fact` compiles
 - [ ] You built the `-ffp-contract=off` variant and diffed the two Listings
 - [ ] You can point at `fmadd` vs `fmul`+`fadd` and explain the rounding difference
-- [ ] You can explain why `ge_nan`'s C reads `b <= a`
-- [ ] You can explain why `pick`'s C shows a branch but the machine code is `fcsel`
-- [ ] There is a real `llvm-objdump` inspection record
+- [ ] You can explain why `ge_nan` reads `b <= a`
+- [ ] You can explain why `pick` shows a branch but the machine code is `fcsel`
