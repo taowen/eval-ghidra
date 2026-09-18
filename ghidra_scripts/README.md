@@ -39,13 +39,6 @@ usable evidence.
 - A bare type name selects the canonical root type; a `/path` selects an exact
   category-scoped type.
 
-## Why the `Nr` prefix was removed
-
-`Nr` abbreviated a product name. The tutorial is generic, so it was removed
-everywhere: class names, `@category`, helper tags (`@tutorial_*`), data-type
-category paths, and the retired/anon prefixes (`__tutorial_*`). See
-[PORT_MAP.md](PORT_MAP.md) for the exact mapping.
-
 ## Running a script
 
 ```python
