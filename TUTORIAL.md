@@ -1,8 +1,8 @@
-# 为什么 Ghidra 的输出这么难读，以及怎么让它变可信
+# Why Ghidra's output is so hard to read, and how to make it trustworthy
 
-## 先看一个反常现象
+## Start with a strange observation
 
-把一段编译好的 C++ 丢进 Ghidra，你会得到这样的东西：
+Drop a compiled C++ binary into Ghidra and you get something like this:
 
 ```c
 void FUN_00101234(long param_1, undefined8 param_2)
@@ -15,162 +15,187 @@ void FUN_00101234(long param_1, undefined8 param_2)
 }
 ```
 
-这段 C 能编译，逻辑也没错。但你看不出：
-- `param_1` 是什么对象？
-- `+0x18` 是什么字段？
-- `iVar5` 是哪个变量？为什么和 `lVar1` 有关系？
-- `in_x8` 是哪来的？它凭什么是参数？
-- `undefined8` 到底是数字、指针还是结构体？
+This C compiles. The logic is not wrong. But you cannot tell:
 
-**这不是 Ghidra 坏了。** 这套教程要讲的，是这背后有一个**根本原因**，理解它之后，
-你不仅知道"怎么修"，还知道"哪些能修、哪些必须自己补、修完凭什么可信"。
+- What object is `param_1`?
+- What field is `+0x18`?
+- Which variable is `iVar5`, and why is it related to `lVar1`?
+- Where did `in_x8` come from, and why is it a parameter?
+- Is `undefined8` a number, a pointer, or a struct?
 
----
-
-## 根因：反编译器在解一个不同的问题
-
-> **反编译器的目标，是生成一段"能编译回等价指令"的 C，不是"还原作者写的源码"。**
-
-这两件事看起来接近，实际差得很远。展开成四条：
-
-### 根因 1：它的正确性标准里没有"可读"
-
-只要生成的 C 能编译、控制流完整、位运算语义对，反编译器就认为成功了。
-变量叫 `iVar5`、类型是 `undefined8`、一个栈槽合成一个变量——对它都**合法**。
-可读性不是它的验收项。
-
-### 根因 2：编译丢掉了源码级信息，反编译器无法凭空恢复
-
-你写的 `struct Pose`、`enum Kind`、有意义的变量名、边界，编译后**全部消失了**，
-只剩寄存器和内存里的一堆字节。反编译器做的是"给这些字节起名字"。
-它不知道那里有个 `Pose`，所以只能起 `undefined8`。
-
-**这类信息不在二进制里，任何工具都变不出来——只能靠逆向者用领域知识 + 证据补。**
-
-### 根因 3：优化把源码的结构打碎了
-
-`-O2` 会做内联、寄存器分配、**栈槽复用**、SSA 合并、尾调用。结果：
-- 源码里"一个变量"在机器里可能变成多个存储位置、多个活区间；
-- 两个毫不相关的变量可以**共用同一块栈空间或同一个寄存器**。
-
-反编译器看到的已经是打碎后的样子。它倾向于把共享的存储**合并**成一个变量
-（就是那个玄乎的 `merge group`）。而源码里那明明是**两个**东西。
-
-### 根因 4：C 的类型系统装不下机器的全部事实，它对 ABI 的建模是启发式的
-
-- 指针和整数在 AArch64 里**共用同一个寄存器**，C 却要求你二选一；
-- AArch64 的隐藏返回在 `x8`、聚合参数会被拆开传、非平凡 C++ 返回另有约定——
-  Ghidra 有默认推断，但和实际二进制不符时就错。
-
-于是它用一串"占位符"来表达"我不确定"：`undefined8`、`in_x8`、`unaff_xN`、
-`extraout_*`、`param_1`。**这些丑名字其实是它在承认自己不知道。**
+**This is not Ghidra being broken.** This tutorial is about the **root causes**
+behind that output. Once you understand them, you know not only *how* to fix it,
+but *what can be fixed*, *what you must supply yourself*, and *why the result is
+trustworthy*.
 
 ---
 
-## 把现象归类，才能对症下药
+## Root cause: the decompiler is solving a different problem
 
-同样是"难读"，根因不同，解法也完全不同：
+> **A decompiler's goal is to produce C that compiles back to equivalent
+> instructions, not C that recovers the source the author wrote.**
 
-| 你看到的现象 | 根因 | 性质 | 能不能靠精修补 |
+Those sound close. They are very far apart. Four causes follow.
+
+### Root cause 1: readability is not part of its correctness criterion
+
+As long as the generated C compiles, the control flow is complete, and the bit
+semantics are right, the decompiler considers itself done. Variables named
+`iVar5`, types called `undefined8`, one stack slot collapsed into one
+variable — all **legal** to it. Readability is not on its acceptance list.
+
+### Root cause 2: compilation threw away source-level information, and the decompiler cannot invent it
+
+Your `struct Pose`, your `enum Kind`, your meaningful variable names, your
+boundaries — all **gone** after compilation. Only registers and bytes remain.
+The decompiler's job is to *give those bytes names*. It does not know a `Pose`
+was there, so it can only name it `undefined8`.
+
+**This information is not in the binary. No tool can conjure it. Only a reverse
+engineer can supply it, using domain knowledge plus evidence.**
+
+### Root cause 3: optimization shatters the source's structure
+
+`-O2` performs inlining, register allocation, **stack-slot reuse**, SSA merging,
+and tail calls. As a result:
+
+- One source variable can become several storage locations and several live ranges;
+- Two unrelated variables can **share the same stack slot or register**.
+
+The decompiler already sees the shattered form. It tends to **merge** shared
+storage into one variable (the mysterious *merge group*). In the source those
+were plainly **two** things.
+
+### Root cause 4: C's type system cannot hold all the machine's facts, and its ABI modeling is heuristic
+
+- Pointers and integers **share the same register** on AArch64, but C forces you to pick one;
+- AArch64 hidden returns live in `x8`, aggregate arguments get split, non-trivial C++ returns have their own convention — Ghidra has default inferences, and when they disagree with the actual binary, it is wrong.
+
+So it uses a set of placeholders to say "I am not sure": `undefined8`, `in_x8`,
+`unaff_xN`, `extraout_*`, `param_1`. **Those ugly names are the decompiler
+admitting it does not know.**
+
+---
+
+## Classify the symptom to treat the cause
+
+"Hard to read" has several different causes, and each needs a different
+response:
+
+| Symptom | Root cause | Nature | Fixable by refinement? |
 | --- | --- | --- | --- |
-| `iVar5`、`undefined8`、`param_1` | 源码信息已丢失 | **信息缺失** | 不能"找回"，只能**用证据+领域知识补**并记录 |
-| 一个变量承担两个语义、旧/新指针同名 | 优化合并/复用了存储 | **表示错误** | 能：确证活区间后**拆分/绑定** |
-| `in_x8`、`extraout_*`、参数错位、返回值标成 `void` | ABI 启发式建模与事实不符 | **建模错误** | 能：建立调用两端 ABI 证据后**修正原型** |
-| `p + N` 下标、字段串成 `undefined4[]` | 没有类型信息 | **信息缺失** | 能：确证布局后**导入唯一类型头** |
-| `a*b+c`、`a>=b`、`.2D` 被标量显示 | 反编译器的高层视图丢失指令细节 | **视图失真** | 能：以 **Listing** 为准还原运算 |
+| `iVar5`, `undefined8`, `param_1` | Source information is gone | **Missing information** | Not "recoverable"; you **supply it from evidence** and record it |
+| One variable with two meanings, old/new pointer sharing a name | Optimization merged or reused storage | **Mis-representation** | Yes: after confirming live ranges, **split/bind** |
+| `in_x8`, `extraout_*`, shifted parameters, return typed as `void` | ABI heuristic disagrees with fact | **Mis-modeling** | Yes: build a two-sided ABI evidence table, then **fix the prototype** |
+| `p + N` indices, fields as `undefined4[]` | No type information | **Missing information** | Yes: after confirming layout, **import a single type header** |
+| `a*b+c`, `a>=b`, `.2D` shown as scalar | The decompiler's high-level view loses instruction detail | **View distortion** | Yes: recover the operation from the **Listing** |
 
-**记住这张表，是这套教程的核心。**
+**Memorize this table. It is the heart of the tutorial.**
 
-- **信息缺失**：不是反编译器算错，是信息不在二进制里。你的工作是补，并且
-  **明确标注哪些是证据、哪些仍未知**——不能假装找回了。
-- **表示错误 / 建模错误 / 视图失真**：信息在二进制里，反编译器**看得到但表达错了**。
-  这些可以用 Listing 证据修正，也是精修脚本存在的意义。
-
----
-
-## 精修是什么意思：把"反编译器的默认假设"换成"证据"
-
-反编译器在不确定时会**替你做假设**：假设 `undefined8`、假设 `x8` 是参数、
-假设共享存储是一个变量。这些假设填充了它不知道的地方，也让输出"看似完整"。
-
-**精修 = 用 Listing 里可独立确证的事实，覆盖它的默认假设，然后让它重新表达。**
-
-- 从 LDR/STR 确证字段偏移 → 导入类型，`param_1 + 0x18` 变成 `pose.confidence`；
-- 从调用两端确证 ABI → 修正原型，`in_x8` 消失、参数归位；
-- 从 P-code 确证活区间 → 拆分 merge group，一个变量变回两个；
-- 从 Listing 确证指令 → 还原 FMA/归约/unordered，不再照抄 C 视图。
-
-而且必须遵守一条铁律：
-
-> **写回不是完成，重反编译才是。**
-> 工具返回 `succeeded` 只证明"写进去了"，不证明"语义对了"。
-
-因为你要对抗的，正是反编译器"用默认假设填满未知"的惯性——不看重新生成的 C，
-你不知道它这次是用你的证据，还是又猜了一个。
+- **Missing information**: the decompiler is not wrong; the information is not in
+  the binary. Your job is to supply it, and to **mark clearly what is evidenced
+  versus still unknown** — never pretend you recovered it.
+- **Mis-representation / mis-modeling / view distortion**: the information *is*
+  in the binary. The decompiler **sees it but expresses it wrong**. These can be
+  corrected with Listing evidence, which is exactly what the refine scripts do.
 
 ---
 
-## 教程怎么组织：每章解决一类根因
+## What refinement means: replace the decompiler's defaults with evidence
 
-每章都是同一个叙事结构：
+When unsure, the decompiler **makes assumptions on your behalf**: assume
+`undefined8`, assume `x8` is a parameter, assume shared storage is one variable.
+Those assumptions fill the gaps it does not know, and make the output *look*
+complete.
+
+**Refinement = overwrite its default assumptions with facts you can independently
+confirm from the Listing, then let it re-express.**
+
+- Confirm a field offset from LDR/STR → import a type, and `param_1 + 0x18`
+  becomes `pose.confidence`;
+- Confirm the ABI from both call sides → fix the prototype, `in_x8` disappears,
+  parameters land correctly;
+- Confirm live ranges from P-code → split the merge group, one variable becomes two again;
+- Confirm instructions from the Listing → recover FMA/reduction/unordered instead
+  of copying the C view.
+
+And one iron rule applies throughout:
+
+> **Writing back is not done; re-decompiling is.**
+> A tool returning `succeeded` only means "it was written", not "the semantics are right".
+
+Because what you are fighting is precisely the decompiler's habit of *filling
+the unknown with defaults*. Without looking at the regenerated C, you cannot
+tell whether it used your evidence or guessed again.
+
+---
+
+## How the tutorial is organized: each chapter solves one root cause
+
+Every chapter follows the same narrative:
 
 ```
-① 写一段语义明确的 C++ → 编译成 AArch64 .so（标准答案已知）
-② 丢进 Ghidra，照抄真实反编译输出（一个具体的"难读"现象）
-③ 问：这是哪类根因？（信息缺失 / 表示错误 / 建模错误 / 视图失真）
-④ 找出 Listing 里的证据，用对应方法修正
-⑤ 看前后 C 对比 —— 并说清这次"修好"覆盖了什么、没覆盖什么
+(1) Write C++ with clear semantics -> compile to AArch64 .so (the answer is known)
+(2) Load it into Ghidra and copy the real decompiler output (one concrete symptom)
+(3) Ask: which root cause is this? (missing info / mis-representation / mis-modeling / view distortion)
+(4) Find the evidence in the Listing, apply the matching method
+(5) Compare the C before and after -- and state what the fix covers and does not cover
 ```
 
-| 章 | 难读的现象 | 根因 | 解决办法 |
+| Chapter | Hard-to-read symptom | Root cause | Solution |
 | --- | --- | --- | --- |
-| [00](00-setup/README.md) | —— | 环境 | NDK、独立 Ghidra 实例、RVA/VA 规则 |
-| [01](01-missing-information/README.md) | `undefined8`、`p + N`、字段串 | 信息缺失（类型） | 建偏移表，导入唯一类型头，复核尺寸偏移 |
-| [02](02-wrong-modeling-abI/README.md) | `in_x8`、`void`、参数错位 | 建模错误（ABI） | 先填调用两端 ABI 表，再改原型 |
-| [03](03-broken-structure/README.md) | 一个变量两语义、旧新指针同名 | 表示错误（优化破坏） | 栈槽建 union、拆 merge group、绑活区间 |
-| [04](04-invisible-edges/README.md) | 虚调用"没有 caller"、目标不可见 | 信息缺失（间接边） | 按 receiver→vptr→slot 追，分开记录 |
-| [05](05-lost-boundary/README.md) | 真入口被截断、异常清理丢失 | 表示错误（边界） | 用 FDE/LSDA 修范围，再审计 |
-| [06](06-view-vs-fact/README.md) | `a*b+c`、`a>=b`、`.2D` 标量化 | 视图失真（运算） | 以 Listing 为准还原运算 |
-| [07](07-verify-and-scope/README.md) | "看起来修好了" | 验证 | 仿真 + 差分，并写清证据范围 |
-| [08](08-close-out/README.md) | 交付后仍有 `iVar5` | 交付标准 | 七项检查、命名、plate、保存 |
+| [00](00-setup/README.md) | — | Environment | NDK, independent Ghidra instance, RVA/VA rules |
+| [01](01-missing-information/README.md) | `undefined8`, `p + N`, fields as indices | Missing information (types) | Build an offset table, import a single type header, re-verify size and offsets |
+| [02](02-wrong-abi-model/README.md) | `in_x8`, `void`, shifted parameters | Mis-modeling (ABI) | Fill a two-sided ABI table first, then fix the prototype |
+| [03](03-broken-structure/README.md) | One variable with two meanings, old/new pointers sharing a name | Mis-representation (optimization) | Build a union for the stack slot, split merge groups, bind live ranges |
+| [04](04-invisible-edges/README.md) | Virtual calls with "no caller", invisible targets | Missing information (indirect edges) | Follow receiver->vptr->slot, record each receiver separately |
+| [05](05-lost-boundary/README.md) | Truncated true entry, lost exception cleanup | Mis-representation (boundary) | Recover the range from FDE/LSDA, then audit |
+| [06](06-view-vs-fact/README.md) | `a*b+c`, `a>=b`, `.2D` shown as scalar | View distortion (operations) | Recover operations from the Listing, not the C |
+| [07](07-verify-and-scope/README.md) | "It looks fixed" | Verification | Emulation plus differential, and state the evidence scope |
+| [08](08-close-out/README.md) | `iVar5` remains after delivery | Delivery standard | Seven checks, naming, plate, save |
 
-## 全教程反复出现的三条规律
+## Three rules that recur throughout
 
-1. **机器指令是唯一事实，反编译 C 是视图。** 显示 ≠ 事实。
-2. **先确证，再写回；写回后必重反编译。** 顺序和理解都不能省。
-3. **证据有范围。** 一个函数对了 ≠ 整条链对了；报告必须写清覆盖到哪。
+1. **The machine instructions are the only fact; the decompiled C is a view.**
+   Display is not fact.
+2. **Confirm before writing back; re-decompile after writing back.**
+   Neither the order nor the re-check can be skipped.
+3. **Evidence has scope.** One correct function does not mean the whole chain is
+   correct; every report must state what it covers.
 
-## 与真实工程的关系
+## Relation to the real project
 
-这套方法对应 ARLauncher 工程实际在用的工具：`eval-ghidra.py` 连现场
-GhidraMCP 交互精修；`ghidra_scripts/` 下去厂商前缀的脚本（`ImportTypes`、
-`InspectType`、`InspectFunctionAbi`、`InspectReturnStorage`、`RefineStackSlot`、
-`RefineUnionFacet`、`RefineRegisterSlot`、`RefineDynamicLocal`、`RefineHighLocal`、
-`InspectHighAt`、`RefineFunctionRange`、`AuditFunctionRanges` 等）做批量写回。
+This method matches the tools the ARLauncher project actually uses:
+`eval-ghidra.py` drives a live GhidraMCP instance for interactive refinement;
+`ghidra_scripts/` holds vendor-neutral scripts (`ImportTypes`, `InspectType`,
+`InspectFunctionAbi`, `InspectReturnStorage`, `RefineStackSlot`,
+`RefineUnionFacet`, `RefineRegisterSlot`, `RefineDynamicLocal`, `RefineHighLocal`,
+`InspectHighAt`, `RefineFunctionRange`, `AuditFunctionRanges`, and more) for
+batch write-back.
 
-## 约定
+## Conventions
 
-- 目标 **AArch64 Android**（`aarch64-linux-android29-clang++ -O2`）；`-O2` 制造的
-  栈槽复用/SSA 合并正是第 03 章要面对的东西。
-- 源码在 `N-xxx/src/`，产物在 `build/`（已忽略）。
-- 地址写 **ELF RVA**（`eval-ghidra.py` 按 `GHIDRA_IMAGE_BASE` 换算）；
-  Java 脚本参数是 **Ghidra VA**。
-- 独立 Ghidra 实例：
+- Target **AArch64 Android** (`aarch64-linux-android29-clang++ -O2`); stack-slot
+  reuse and SSA merging introduced by `-O2` are exactly what chapter 03 confronts.
+- Source lives in `N-xxx/src/`; build output in `build/` (ignored).
+- Addresses are **ELF RVAs** (`eval-ghidra.py` applies `GHIDRA_IMAGE_BASE`);
+  Java script arguments are **Ghidra VAs**.
+- A separate Ghidra instance is used:
 
-  | 实例 | 安装 | settings | 端口 | 工程 |
+  | Instance | Install | Settings | Port | Project |
   | --- | --- | --- | --- | --- |
   | ARLauncher | `C:\tools\ghidra_12.1.2_PUBLIC` | `%APPDATA%\ghidra\...` | 8089 | `nr_api1212.gpr` |
-  | 教程 | `C:\tools\ghidra-tutorial` | `ghidra-tutorial\user` | **8090** | `ghidra-tutorial\projects\tutorial.gpr` |
+  | Tutorial | `C:\tools\ghidra-tutorial` | `ghidra-tutorial\user` | **8090** | `ghidra-tutorial\projects\tutorial.gpr` |
 
   ```powershell
   pwsh -File start-tutorial-ghidra.ps1
   $env:GHIDRA_MCP_URL = "http://127.0.0.1:8090"
   ```
 
-## 一章算完成的标准
+## What makes a chapter complete
 
-1. 示例能在本机 NDK 下编译；
-2. 「现象」是真实反编译输出；
-3. 能**判定它属于哪类根因**；
-4. 精修脚本在 GhidraMCP 上真跑过，保留前后 C；
-5. 能说清这次覆盖了什么、没覆盖什么。
+1. The example compiles under the local NDK;
+2. The "symptom" is real decompiler output;
+3. You can **classify which root cause it is**;
+4. The refine script actually ran on GhidraMCP, with before/after C preserved;
+5. You can state what the fix covered and did not cover.

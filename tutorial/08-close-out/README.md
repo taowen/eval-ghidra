@@ -1,75 +1,91 @@
-# 08 — 收尾：把"我补的信息"和"仍未知的事实"分清楚
+# 08 — Close-out: separate "information I supplied" from "facts still unknown"
 
-前面各章都在补信息、修表示。这一章回答一个容易被忽略的问题：
-**补完之后，怎么让下一个人知道哪些是证据、哪些是我的推断、哪些仍然不知道？**
+Every earlier chapter supplied information or corrected a representation. This
+chapter answers an easily overlooked question: **after all that, how does the
+next person know what is evidenced, what is my inference, and what is still
+unknown?**
 
-因为根因 2 已经说明：有些信息**根本不在二进制里**，是我们补进去的。
-如果不区分，下一个读者会把我们的推断当成官方事实。
+Because root cause 2 already showed that some information **is not in the binary
+at all** — we supplied it. Without separating it, the next reader will treat our
+inference as official fact.
 
-## 七项检查
+## The seven checks
 
-逐项过，每项都要能指出证据位置：
+Go through them one by one; each must point to a concrete evidence location:
 
-1. 函数、参数、业务局部和成员的类型/语义名逐项检查，ABI 与调用两端一致；
-   **无未解释的 `local_*`、`iVar*` 等业务占位名**，显示残留按下面原则留证；
-2. 真入口与完整业务/清理范围已核对，**内部块没有误建函数**；
-3. **无未解释的 `in_xN/unaff_xN/extraout_*`**；工具残留有写入者和使用者证据；
-4. 直接 callee 契约和业务间接目标已恢复；已识别日志/运行库边界不递归展开；
-5. 影响业务的 rodata 已确定类型、位型及用途；不为纯日志解密字符串；
-6. 错误返回、业务异常清理、解锁和生命周期可解释；不要求复刻异常运行库；
-7. 当前 Ghidra 结构/union/局部绑定与 native 布局相符；受影响的 C 已重查。
+1. Function, parameters, business locals, and members have each been checked for
+   type/semantic name, and the ABI matches on both call sides; **no unexplained
+   `local_*`, `iVar*` business placeholder names**, and display residue is
+   documented per the naming rules;
+2. The true entry and the full business/cleanup range are verified, and **no
+   internal block was mis-created as a function**;
+3. **No unexplained `in_xN/unaff_xN/extraout_*`**; tool residue has writer and
+   user evidence;
+4. Direct callee contracts and business indirect targets are recovered;
+   identified logging/runtime boundaries are not expanded recursively;
+5. Business-relevant rodata has a known type, bit pattern, and purpose; strings
+   are not decrypted for pure logging;
+6. Error returns, business exception cleanup, unlocks, and lifetimes are
+   explainable; the exception runtime need not be reproduced;
+7. The current Ghidra struct/union/local bindings match the native layout, and
+   affected C has been re-checked.
 
-对应关系：检查 1→第 03 章命名，2→第 05 章范围，3→第 02/03 章 ABI 与 CALL，
-4→第 04 章间接调用，5→第 06 章 rodata，6→第 05 章清理，7→第 01 章布局 + 每步重反编译。
+Mapping: check 1 -> chapter 03 naming, 2 -> chapter 05 range, 3 -> chapters 02/03
+ABI and CALL, 4 -> chapter 04 indirect calls, 5 -> chapter 06 rodata,
+6 -> chapter 05 cleanup, 7 -> chapter 01 layout plus the re-decompile rule.
 
-## V5 plate：写给下一个读者
+## The V5 plate: write it for the next reader
 
 ```text
-一行说明输入如何变成输出。
+One line describing how inputs become outputs.
 
 Algorithm:
-  按实际业务顺序描述数据来源、运算、写回、锁/回调。
+  In real business order: data sources, operations, writes back, locks/callbacks.
 Parameters:
-  名称、类型、单位、所属对象/输出范围。
+  Name, type, unit, owning object/output range.
 Returns:
-  返回值含义和错误路径。
+  Meaning of the return value and error paths.
 Special Cases:
-  真实边界条件；尚未解决项或工具残留及其证据。
+  Real edge conditions; unresolved items or tool residue and their evidence.
 Source:
-  pinned 官方 SO 身份；关键 Listing 证据在函数/指令注释中。
+  Pinned official SO identity; key Listing evidence lives in function/instruction comments.
 ```
 
-关键指令加 PRE/EOL 注释，向量算式保留 lane/舍入树。**类型变化后检查 plate 是否仍准确。**
+Add PRE/EOL comments to key instructions, and keep lanes/rounding trees in vector
+expressions. **After a type change, check whether the plate is still accurate.**
 
-## 区分三类信息（本章重点）
+## Separate three kinds of information (the point of this chapter)
 
-| 类别 | 在 plate/C 里怎么表达 |
+| Category | How to express it in the plate/C |
 | --- | --- |
-| **Listing 确证的**（偏移、ABI、运算） | 直接写，注释可引指令 |
-| **我们补的语义**（变量名、业务含义） | 写，但来源标为推断；有官方证据时补进 Source |
-| **仍未知的** | **保留证据名**（如 `unknown_0c`），并明确列出，不猜 |
+| **Confirmed by the Listing** (offsets, ABI, operations) | State directly; the comment may cite the instruction |
+| **Semantics you supplied** (variable names, business meaning) | State it, but mark its source as inference; add official evidence to Source when available |
+| **Still unknown** | **Keep an evidence name** (e.g. `unknown_0c`), list it explicitly, do not guess |
 
-第 5 条检查说的"不为纯日志解密字符串"、第 4 条"运行库边界不递归展开"，
-都是在划这条线：**哪些交给标准 C++/运行库，哪些必须精确。**
+Check 5's "do not decrypt strings for pure logging" and check 4's "do not expand
+runtime boundaries recursively" both draw this line: **what is delegated to
+standard C++/the runtime, and what must be exact.**
 
-## 收尾顺序
+## Close-out order
 
-1. 跑 `analyze_function_completeness`，处理可修复项，接受项写明原因；
-2. 确认七项检查都有证据位置；
-3. `save_program()`；
-4. 报告完成——**并报告剩余缺口**，不能用 SKIP/未观察到错误补齐。
+1. Run `analyze_function_completeness`, handle fixable items, explain accepted ones;
+2. Confirm all seven checks have evidence locations;
+3. `save_program()`;
+4. Report completion — **and report the remaining gaps**; do not paper over them
+   with SKIP or "no error observed".
 
-## 操作失败时
+## When an operation fails
 
-- 保留返回错误、当前 C/变量和已做修改；
-- **脚本超时不代表终止**：先检查原任务是否仍运行，不重试写操作；
-- **不手动嵌套 GhidraScript 事务**；
-- 保存报 `active transaction` 时先确认任务结束并检查事务状态，
-  不直接 `close(save=False)` 丢弃未保存精修。
+- Keep the returned error, the current C/variables, and any changes made;
+- **A script timeout does not mean it stopped**: first check whether the task is
+  still running, and do not retry a write;
+- **Do not manually nest GhidraScript transactions**;
+- If saving reports `active transaction`, confirm the task has ended and check
+  the transaction state; do not `close(save=False)` and discard unsaved refinement.
 
-## 本章验收
+## Chapter checklist
 
-- [ ] 七项检查每项都能指出证据位置
-- [ ] C 中没有未解释的业务占位名；残留项已留证
-- [ ] plate 与当前 C/类型一致，且区分了"确证/推断/未知"
-- [ ] `save_program()` 成功，剩余缺口写清
+- [ ] All seven checks point to concrete evidence
+- [ ] No unexplained business placeholder names remain in the C; residue is documented
+- [ ] The plate matches the current C/types and distinguishes confirmed/inferred/unknown
+- [ ] `save_program()` succeeded and the remaining gaps are stated

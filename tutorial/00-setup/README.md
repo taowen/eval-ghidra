@@ -1,11 +1,13 @@
-# 00 — 准备：建立可复现的分析环境
+# 00 — Setup: a reproducible analysis environment
 
-这一章不涉及根因，只固定三件会影响后续判断的事：**怎么编译**、**连哪个
-Ghidra**、**地址怎么算**。
+This chapter has no root cause. It fixes three things that affect every later
+judgment: **how you compile**, **which Ghidra you connect to**, and **how
+addresses are computed**.
 
-## 1. 编译示例
+## 1. Compile the examples
 
-分析对象是 AArch64 Android 的 `.so`，示例必须同架构、同优化级别：
+The target is an AArch64 Android `.so`, so examples must share the
+architecture and optimization level:
 
 ```bash
 "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/<host>/bin/aarch64-linux-android29-clang++" \
@@ -13,14 +15,15 @@ Ghidra**、**地址怎么算**。
   -o build/<chapter>.so src/*.cpp
 ```
 
-- **`-O2` 是故意的**：根因 3（优化打碎结构）只在优化下出现。关掉优化，第 03 章
-  的现象根本不会发生，你也就学不到真实工程里最常遇到的那类问题。
-- 第 05 章需要异常/LSDA，去掉 `-fno-exceptions`。
-- `-fvisibility=default` 让符号可见，便于按名字定位函数。
+- **`-O2` is deliberate**: root cause 3 (optimization shattering the structure)
+  only appears under optimization. Turn it off and chapter 03's symptom never
+  occurs, so you never learn the most common real-world problem.
+- Chapter 05 needs exceptions/LSDA, so drop `-fno-exceptions`.
+- `-fvisibility=default` keeps symbols visible so functions can be found by name.
 
-## 2. 连接现场 Ghidra
+## 2. Connect to a live Ghidra
 
-教程使用独立实例：
+The tutorial uses its own instance:
 
 ```powershell
 pwsh -File start-tutorial-ghidra.ps1
@@ -32,32 +35,33 @@ python3 eval-ghidra.py 'list_open_programs()'
 python3 eval-ghidra.py --help get_function_variables
 ```
 
-## 3. 两条地址规则，不能混
+## 3. Two address rules that must not be mixed
 
-| 规则 | 适用范围 |
+| Rule | Applies to |
 | --- | --- |
-| **ELF RVA** 输入，schema 自动 + image base | `eval-ghidra.py` 的地址参数 |
-| **Ghidra VA**，不换算 | Java 脚本的 `args`、批量地址字符串 |
+| **ELF RVA** input, schema adds the image base | `eval-ghidra.py` address parameters |
+| **Ghidra VA**, no conversion | Java script `args`, batch address strings |
 
-用 `get_current_program_info()` 核对 image base；本工程是 `0x100000`。
+Check the image base with `get_current_program_info()`; in this project it is
+`0x100000`.
 
-## 4. 最小工作集
+## 4. Minimal working set
 
-| 用途 | 调用 |
+| Purpose | Call |
 | --- | --- |
 | C | `analyze_for_documentation(function_address=addr)` |
 | Listing | `disassemble_function(address=addr)` |
-| 变量 | `get_function_variables(address=addr)` |
+| Variables | `get_function_variables(address=addr)` |
 | high P-code | `get_function_pcode(function_address=addr, granularity="high")` |
-| 调用者/引用 | `get_function_callers` / `get_xrefs_to` |
-| 类型查找 | `search_data_types(pattern=...)` |
-| 完整性 | `analyze_function_completeness(function_address=addr)` |
-| 保存 | `save_program()` |
+| Callers/refs | `get_function_callers` / `get_xrefs_to` |
+| Type lookup | `search_data_types(pattern=...)` |
+| Completeness | `analyze_function_completeness(function_address=addr)` |
+| Save | `save_program()` |
 
-Java 脚本执行前必须 `switch_program(program=...)`。
+Java scripts must be preceded by `switch_program(program=...)`.
 
-## 本章验收
+## Chapter checklist
 
-- [ ] 能编译出 aarch64 `.so`
-- [ ] `list_open_programs()` 返回教程工程，base 是 `0x100000`
-- [ ] 能说清当前操作的是 RVA 还是 VA
+- [ ] You can compile an aarch64 `.so`
+- [ ] `list_open_programs()` returns the tutorial project, base is `0x100000`
+- [ ] You can say whether the current operation uses an RVA or a VA

@@ -1,86 +1,97 @@
-# 05 — 表示错误（边界）：真入口不是你以为的那个地址
+# 05 — Mis-representation (boundary): the true entry is not the address you think
 
-> **根因**：`getFunctionContaining` 返回成功，**不证明该地址是入口**。
-> 加上 `noreturn` 传播等分析动作会改函数边界，真入口可能被截断、异常清理
-> 可能丢失。边界错了，后面 ABI、局部、运算全建在错误范围上。
+> **Root cause**: `getFunctionContaining` succeeding **does not prove the address
+> is an entry**. On top of that, analyses such as `noreturn` propagation change
+> function boundaries, so a true entry can be truncated and exception cleanup
+> lost. Get the boundary wrong and the ABI, locals, and operations all rest on a
+> wrong range.
 
-## 现象
+## Symptom
 
-`src/range.cpp`（编译时**不加** `-fno-exceptions`）：
+`src/range.cpp` (**do not** add `-fno-exceptions`):
 
 ```cpp
 void cleanup();
 void spanned(int mode) {
-    Guard g;                                  // 析构必须在异常路径执行
+    Guard g;                                  // destructor must run on the exception path
     work();
-    if (mode) throw std::runtime_error("x");  // 制造 landing pad
-    tail_cleanup();                           // 尾部清理
+    if (mode) throw std::runtime_error("x");  // creates a landing pad
+    tail_cleanup();                           // tail cleanup
 }
 ```
 
-反编译/分析后看到：
-- 函数范围比实际短，尾部 `tail_cleanup` 和返回值被截断；
-- LSDA/landing pad 被误建成独立函数；
-- 异常路径的析构/解锁在 C 里消失。
+After decompilation/analysis:
+- The function range is shorter than reality; the tail `tail_cleanup` and the
+  return value are truncated;
+- The LSDA/landing pad is mis-created as a separate function;
+- The destructor/unlock on the exception path vanishes from the C.
 
-## 判定：这属于哪类根因？
+## Classify: which root cause is this?
 
-**表示错误（边界）**。真实边界由 FDE 给出，反编译器/分析动作表达错了。能修。
+**Mis-representation (boundary).** The true boundary comes from the FDE; the
+decompiler/analysis expressed it wrongly. It is fixable.
 
-## 找出证据：FDE/LSDA
+## Find the evidence: FDE/LSDA
 
-- **FDE** 给出真实起止（`.eh_frame`）；
-- **LSDA** 给出 landing pad 与清理区域；
-- 指令质量：AArch64 区间必须 4 字节对齐。
+- **FDE** gives the true start/end (`.eh_frame`);
+- **LSDA** gives landing pads and cleanup regions;
+- Instruction granularity: an AArch64 range must be 4-byte aligned.
 
-## 修正
+## Correction
 
-### 1. 修范围
+### 1. Fix the range
 
 ```text
 RefineFunctionRange.java entryVA exclusiveEndVA
 ```
 
-脚本会：核对 4 字节对齐、拒绝从别的函数偷字节、拒绝缩短现有 body、
-逐条反汇编缺失指令，并打印前后 body。
+The script verifies 4-byte alignment, refuses to steal bytes from another
+function, refuses to shrink the existing body, disassembles any missing
+instructions, and prints the body before and after.
 
-### 2. 批量核对
+### 2. Batch audit
 
 ```text
 AuditFunctionRanges.java entryVA endVA [entryVA endVA ...]
 ```
 
-**必须在签名导入/自动分析之后跑**——因为 `noreturn` 传播可能把之前恢复的
-landing pad 从 body 里去掉。
+**Run this after signature import / auto-analysis** — `noreturn` propagation can
+remove a previously recovered landing pad from the body.
 
-### 3. 不相邻 body
+### 3. Disjoint body
 
 ```text
 AuditDisjointFunctionBody.java entryVA startVA endVA [startVA endVA ...]
 ```
 
-检查被拆成多块但同属一个函数的范围。
+Checks a range split into multiple pieces that still belong to one function.
 
-### 4. 可疑分支
+### 4. Suspicious branches
 
-读 `flowType`/`fallThrough`/`flows` 核对真实条件跳转。机器 CFG 单后继而 C 多出
-else 时，**保留 raw/high 和结构化 C 对照，不改 FlowOverride 伪造机器边**。
-可以把真实分支条件/写入顺序记到 plate。
+Read `flowType`/`fallThrough`/`flows` and verify the real conditional jumps. When
+the machine CFG has a single successor but the C has an extra else, **keep the
+raw/high and structured-C side by side; do not forge machine edges with
+FlowOverride**. You may record the real branch condition and write order in the
+plate.
 
-## 未决范围时的纪律
+## Discipline while the range is unresolved
 
-**不要求复刻异常运行库**（异常分配器、RTTI、unwinder 不必精修），
-但**业务异常类型、错误码、清理范围、资源释放、解锁顺序必须保留**。
+**You are not required to reproduce the exception runtime** (exception
+allocator, RTTI, unwinder need not be refined), but **business exception types,
+error codes, cleanup ranges, resource release, and unlock ordering must be
+preserved**.
 
-## 如果没做这一步
+## If you skip this
 
-- 范围截断 → 尾部清理和返回值丢失，异常路径资源泄漏；
-- landing pad 被误建成独立函数 → 控制流断裂；
-- 为了"不翻译日志"删掉官方 CFG 里的清理分支 → 异常时解锁/释放顺序错误。
+- Truncated range: tail cleanup and the return value are lost, and the exception
+  path leaks resources;
+- A landing pad mis-created as its own function breaks control flow;
+- Deleting the cleanup branch in the official CFG to "avoid logging" corrupts
+  the unlock/release order on the exception path.
 
-## 本章验收
+## Chapter checklist
 
-- [ ] 真入口/排他结束与 FDE 一致，`AuditFunctionRanges` PASS
-- [ ] 异常路径的析构/解锁在 C 中可解释，未误建成独立函数
-- [ ] 能指出范围截断会让哪个资源在异常时泄漏
-- [ ] `analyze_function_completeness` 的范围类问题已处理，接受项写明原因
+- [ ] True entry / exclusive end match the FDE; `AuditFunctionRanges` passes
+- [ ] The exception path's destructor/unlock is explainable in the C and not a separate function
+- [ ] You can say which resource leaks on an exception if the range is truncated
+- [ ] `analyze_function_completeness` range issues are handled, with accepted items explained

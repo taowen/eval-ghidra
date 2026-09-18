@@ -1,78 +1,88 @@
-# 07 — 验证与证据范围：怎么知道"真的修好了"
+# 07 — Verification and evidence scope: how you know it is really fixed
 
-前面各章都在"改"，这一章回答"怎么知道改对了、以及这个'对了'覆盖到哪"。
+Every earlier chapter *changes* something. This chapter answers "how do you know
+it is right, and what does that 'right' cover".
 
-## 核心问题
+## The core problem
 
-精修最大的陷阱不是改错，是**把"看起来对"当成"确实对"**：
+The biggest trap in refinement is not a wrong edit; it is **mistaking "looks
+right" for "is right"**:
 
-- 工具打印 `succeeded`，但只是"写进去了"；
-- 一个叶子函数逐位一致，但整条链根本没通；
-- 仿真跑出了预期数字，但仿真器自己提供了 libm。
+- A tool prints `succeeded`, but that only means "it was written";
+- A leaf function is bit-exact, but the whole chain is not connected;
+- Emulation produces the expected number, but the emulator provided libm itself.
 
-所以验证要回答两个问题：**怎么验**，以及**这个验证能证明什么、不能证明什么**。
+So verification must answer two questions: **how to verify**, and **what the
+verification does and does not prove**.
 
-## 验证层次：每层只能证明本层
+## Verification layers: each proves only its own layer
 
-| 验证层 | 能证明什么 | **不能**替代什么 |
+| Layer | Proves | **Cannot** replace |
 | --- | --- | --- |
-| 直接函数差分 | 给定输入和依赖契约下的业务结果 | 未覆盖分支、依赖实现、并发集成 |
-| 叶子回放 | 专用录制保留的独立函数回放 | 实时输入、真实调度、完整渲染 |
-| 官方回放比较 | 同输入/同查询的比较 | 实际 GPU、compositor、动态显示 |
-| 实际绘制 | 姿态生产、初始化、GPU 像素 | 实时选帧、扫描时刻、物理扫描输出 |
-| 动态设备验收 | 实际线程、提交、compositor、转头显示 | 未实际检查的光学扫描输出 |
+| Direct function differential | Business result under given inputs and dependency contracts | Uncovered branches, dependency implementations, concurrent integration |
+| Leaf replay | Independent function replay from a dedicated recording | Live inputs, real scheduling, full rendering |
+| Official replay comparison | Same-input/same-query comparison | Actual GPU, compositor, dynamic display |
+| Actual drawing | Pose production, initialization, GPU pixels | Live frame select, scan instant, physical scanout |
+| On-device acceptance | Real threads, submission, compositor, head movement | Optical scanout not actually inspected |
 
-**报告 PASS 必须同时报告它覆盖到哪。** 局部 PASS 不能补齐全局。
+**A PASS must always be reported with what it covers.** A local PASS cannot fill a
+global gap.
 
-## 手段 A：P-code 仿真（快，但有硬限制）
+## Method A: P-code emulation (fast, with hard limits)
 
 ```bash
 python3 eval-ghidra.py --help emulate_function
 ```
 
-只对**确认过的真入口**调用，核对 packed/padded 对象、寄存器、x8 返回 ABI。
+Call only **confirmed true entries**, and verify packed/padded objects, registers,
+and the x8 return ABI.
 
-| 能得到 | 不能得到 |
+| You get | You do not get |
 | --- | --- |
-| 纯标量运算的输入→输出 | 未实现的 `CALLOTHER` |
-| 位运算/整数结果 | 设备上的 AArch64/NEON 执行结果 |
-| 是否正常返回 | 依赖的 libm（**模拟器可能自带**） |
-| ABI 是否被模型正确表达 | 复杂函数的依赖交互、线程、GPU |
+| Scalar-only input -> output | Unimplemented `CALLOTHER` |
+| Bit/integer results | AArch64/NEON execution on the device |
+| Whether it returns normally | The libm dependency (the **emulator may provide it**) |
+| Whether the ABI is modeled correctly | Complex dependency interactions, threads, GPU |
 
-**模拟器提供 libm 不能据此宣称官方依赖已验证。**
+**The emulator providing libm does not mean the official dependency has been
+verified.**
 
-## 手段 B：同输入差分（强，需 fixture）
+## Method B: same-input differential (strong, needs fixtures)
 
-规则：
+Rules:
 
-- 官方与译文用**独立 fixture，不共享可变状态**；
-- 测试绑定已有类型，不重写会漂移的结构清单；
-- 依赖三种执行方式：执行官方 / 回放捕获交互 / 执行译文；
-- **先测父函数，再逐个替换依赖**；
-- 回放必须先检查目标、参数、调用顺序，**再**提供返回值和副作用——
-  **不能直接把父函数的预期最终状态灌进去**（那样测试永远通过，却什么都没验）。
+- The official and translated sides use **independent fixtures that share no
+  mutable state**;
+- Tests bind existing types instead of rewriting a structure list that drifts;
+- Dependencies have three execution modes: run the official, replay captured
+  interactions, run the translation;
+- **Test the parent first, then replace dependencies one by one**;
+- Replay must check targets, arguments, and call order **before** supplying
+  return values and side effects — **you cannot pour the parent's expected final
+  state into the input** (that makes the test always pass while proving nothing).
 
-## 静态检查工具
+## Static check tools
 
 ```python
 run_ghidra_script(script_name=r"...\ghidra_scripts\AuditAarch64ResultUse.java",
                   args="<trueEntryVA>", capture_output=True)
 ```
 
-检查 W0/x8 返回结果是否被调用者正确消费，配合第 02 章的 ABI 修复使用。
+Checks whether the W0/x8 return result is consumed correctly by the caller,
+paired with the chapter 02 ABI fix.
 
-`analyze_function_completeness`：处理可修复项；**每个接受项写明原因**，
-不能用分数或"工具限制"笼统放行。
+`analyze_function_completeness`: handle fixable items; **explain every accepted
+item**, and do not wave it through with a score or "tool limitation".
 
-## 如果没做这一步
+## If you skip this
 
-- 把仿真输出当设备行为，NEON/时序差异被漏掉；
-- 用局部函数 PASS 宣称整条链通过；
-- 给父函数灌预期输出，测试永远通过却毫无意义。
+- You treat emulation output as device behavior and miss NEON/timing differences;
+- You use a local function PASS to claim the whole chain passes;
+- You pour expected output into the parent so the test always passes and proves nothing.
 
-## 本章验收
+## Chapter checklist
 
-- [ ] 一个叶子函数在仿真中返回预期结果
-- [ ] 一个有 libm/复杂依赖的函数暴露仿真限制，并写清限制内容
-- [ ] 一个同输入差分记录了"匹配范围 + 未覆盖分支"
-- [ ] 每次 PASS 都附了证据范围说明
+- [ ] A leaf function returns the expected result under emulation
+- [ ] A function with libm/complex dependencies exposes emulation's limits, which you state
+- [ ] A same-input differential records "matched scope + uncovered branches"
+- [ ] Every PASS carries an evidence-scope statement

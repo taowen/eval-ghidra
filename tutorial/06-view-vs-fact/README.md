@@ -1,74 +1,83 @@
-# 06 — 视图失真：反编译 C 不是数值等价的
+# 06 — View distortion: the decompiled C is not numerically equivalent
 
-> **根因 1 的直接体现**：反编译器的正确性标准是"能编译回等价指令"，不是
-> "可读""数值逐位一致"。它把 `FMLA` 显示成 `a*b+c`、把 `.2D` 显示成标量、
-> 把 `B.PL` 显示成 `>=`——这些都是**它给你的视图**，不是指令。
-> 照抄这个视图，会得到"数学等价但不逐位一致"的结果。
+> **The direct manifestation of root cause 1**: the decompiler's correctness
+> criterion is "compiles back to equivalent instructions", not "readable" or
+> "bit-for-bit identical". It shows `FMLA` as `a*b+c`, `.2D` as a scalar, and
+> `B.PL` as `>=` — those are **the view it gives you**, not the instructions.
+> Copy that view and you produce "mathematically equivalent but not bit-exact"
+> results.
 
-## 现象
+## Symptom
 
-`src/math.cpp`：
+`src/math.cpp`:
 
 ```cpp
-float fused(float a, float b, float c) { return a*b + c; }  // FMLA 还是 FMUL+FADD？
+float fused(float a, float b, float c) { return a*b + c; }  // FMLA or FMUL+FADD?
 float reduce(const float* v)           { return v[0]+v[1]+v[2]+v[3]; }
 bool  ge_nan(float a, float b)         { return a >= b; }
 float pick(float a, float b, bool c)   { return c ? a : b; }
 ```
 
-用 `-ffp-contract=fast`（默认）和 `-ffp-contract=off` 各编一份对比。
+Compile twice, once with `-ffp-contract=fast` (the default) and once with
+`-ffp-contract=off`, and compare.
 
-反编译把四种情况都显示得很"自然"：
-- `a*b+c` 看不出是融合还是分开；
-- 归约显示成连续加法，括号/结合顺序丢失；
-- `a >= b` 看起来就是 `a >= b`；
-- 位选择看起来像分支。
+The decompiler renders all four "naturally":
+- `a*b+c` does not reveal whether it is fused or separate;
+- The reduction appears as a running sum, with brackets/association lost;
+- `a >= b` looks exactly like `a >= b`;
+- The bit-select looks like a branch.
 
-## 判定：这属于哪类根因？
+## Classify: which root cause is this?
 
-**视图失真**。指令是事实，C 是视图。**以 Listing 为准，不以 C 为准。**
+**View distortion.** The instructions are the fact; the C is a view. **Go by the
+Listing, not the C.**
 
-## 找出证据：Listing + 手册 §8 对照表
+## Find the evidence: Listing + the handbook's comparison table
 
-| Listing 事实 | 翻译动作与检查 |
+| Listing fact | Translation action and check |
 | --- | --- |
-| FMUL 后 FADD 与 FMLA/FMADD | 分开表达非融合运算并禁用隐式 contraction；融合处用对应 intrinsic。查看真实优化产物，检查意外 FMA 和缺失 FMA |
-| `.2D` 与标量 D、lane 搬运 | 记录每 lane 输入、结果和 store 偏移；native 保留向量模式，**不能以标量化 C 为由改运算树** |
-| FADDP / 多步求和 | 写出有括号的归约树；**不能换成数学等价的任意结合顺序** |
-| FCMP / FCCMP 后条件跳转 | 对有序值和 unordered 分别列分支；**`B.PL` 包含 unordered，不能无条件译成 `a >= b`** |
-| FSQRT、精确 rodata、位选择 | 检查是否生成额外库调用；常量按原位型/十六进制浮点保存；mask 是逐位选择 |
-| 整数乘加、除法、计时单位 | 记录位宽、有符号性、截断顺序和单位；模运算用无符号位运算，避免 signed overflow |
-| 原子读写、锁、回调 | 按实际 LDR/LDAR、STR/STLR、RMW 恢复；**不能为保险加重内存序、加锁或改发布时机** |
+| FMUL followed by FADD vs FMLA/FMADD | Express non-fused operations separately and disable implicit contraction; use the matching intrinsic where fused. Inspect the real optimized output for unexpected and missing FMA |
+| `.2D` vs scalar D, lane moves | Record each lane's input, result, and store offset; keep confirmed vector patterns in the native code — **do not change the operation tree because the C looks scalar** |
+| FADDP / multi-step sums | Write the reduction as a parenthesized tree; **do not swap in a mathematically equivalent association order** |
+| FCMP / FCCMP followed by a branch | List branches for ordered and unordered separately; **`B.PL` includes unordered and must not be translated unconditionally to `a >= b`** |
+| FSQRT, exact rodata, bit select | Check whether an extra library call is generated; store constants by original bit pattern/hex float; a mask is a bit select |
+| Integer multiply-add, division, timing units | Record width, signedness, truncation order, and units; implement modular arithmetic with well-defined unsigned bit operations to avoid signed overflow |
+| Atomic reads/writes, locks, callbacks | Recover from the actual LDR/LDAR, STR/STLR, RMW, and call boundary; **do not add memory ordering, locks, or change publication timing for safety** |
 
-## 修正
+## Correction
 
-1. **先让 Ghidra 类型和字段正确，再改 native 译文**；
-2. 逐条对照 Listing 记录：融合/非融合、归约括号树、`FCMP` 后跳转、rodata 位型、mask；
-3. 用 `get_function_pcode` 与 raw Listing 区分"编译器生成"与"反编译器显示"；
-4. 复核真实汇编产物：
+1. **First make Ghidra's types and fields correct, then edit the native translation**;
+2. Record against the Listing line by line: fused/non-fused, reduction tree,
+   `FCMP` branch, rodata bit patterns, masks;
+3. Use `get_function_pcode` and the raw Listing to separate "what the compiler
+   generated" from "what the decompiler displays";
+4. Inspect the real assembly product:
 
    ```bash
    llvm-objdump -dr --demangle <object>
    ```
 
-   单文件编译只证明该翻译单元可编译；全 APK 链接、函数验证、设备表现**分别报告**。
+   A single-file compile only proves that translation unit compiles; full APK
+   linking, function verification, and device behavior are reported **separately**.
 
-## 命名也要在这里核对
+## Naming is also checked here
 
-字段名描述该偏移最终写入的值，不以旁边 dVar 名为依据。矩阵明确行列、转置、
-向量方向与输出布局；四元数明确 xyzw/wxyz、乘法次序与符号。
-裸 `pow`、gamma、归一化、额外空值保护或"等价优化"**均须有官方证据**。
+A field name describes the value ultimately written at that offset, not the
+adjacent `dVar` name. Matrices must state row/column, transpose, vector
+direction, and output layout; quaternions must state xyzw/wxyz, multiplication
+order, and signs. Bare `pow`, gamma, normalization, extra null protection, or
+"equivalent optimization" **must all have official evidence**.
 
-## 如果没做这一步
+## If you skip this
 
-- 照抄 `a*b+c`，需要融合的路径少一次 FMA（或反之）；
-- 归约顺序改变 → 结果末位不同；
-- `B.PL` 无条件译成 `a >= b` → NaN 输入走错分支；
-- NEON 被标量化 → lane/舍入改变，影响最终像素。
+- Copying `a*b+c` omits an FMA where fusion is required (or adds one);
+- Changing the reduction order makes the last bit differ;
+- Translating `B.PL` unconditionally to `a >= b` makes NaN inputs take the wrong branch;
+- Scalarizing NEON changes lanes/rounding and affects the final pixels.
 
-## 本章验收
+## Chapter checklist
 
-- [ ] 能区分哪些是 Listing 事实、哪些只是反编译显示
-- [ ] 融合/归约/unordered 分支在译文中有明确对应
-- [ ] 给出一个输入，证明照抄 C 会与 Listing 结果不同
-- [ ] 有 `llvm-objdump` 的真实产物检查记录
+- [ ] You can distinguish Listing facts from decompiler display
+- [ ] Fused/reduction/unordered branches have explicit counterparts in the translation
+- [ ] You can give an input where copying the C differs from the Listing
+- [ ] There is a real `llvm-objdump` inspection record
