@@ -146,15 +146,15 @@ method to a binary where nobody knows the answer.
 
 | Chapter | The task | How the decompiler misleads you |
 | --- | --- | --- |
-| [00](00-setup/README.md) | Set up the environment | — |
-| [01](01-missing-information/README.md) | Reimplement `pose_z`/`bump` | Types are absent; offsets appear as `+0x24` |
-| [02](02-wrong-abi-model/README.md) | Reimplement `make_identity`/`query_pose` | Return typed `void`; a float argument disappears |
-| [03](03-broken-structure/README.md) | Reimplement `reuse_stack`/`consume` | One slot serves three objects; the return value is lost |
-| [04](04-invisible-edges/README.md) | Trace which `render` runs | The vtable edge is invisible; both targets look uncalled |
-| [05](05-lost-boundary/README.md) | Recover `spanned`'s cleanup | The function ends too early; exception cleanup is orphaned |
-| [06](06-view-vs-fact/README.md) | Match `fused`'s arithmetic | Identical-looking C hides `fmadd` vs `fmul`+`fadd` |
-| [07](07-verify-and-scope/README.md) | Know whether the fix is real | A plausible result is not a verified one |
-| [08](08-close-out/README.md) | Hand the function to the next person | Named locals and a plate are part of delivery |
+| [00](tutorial/00-setup/README.md) | Set up the environment | — |
+| [01](tutorial/01-missing-information/README.md) | Reimplement `pose_z`/`bump` | Types are absent; offsets appear as `+0x24` |
+| [02](tutorial/02-wrong-abi-model/README.md) | Reimplement `make_identity`/`query_pose` | Return typed `void`; a float argument disappears |
+| [03](tutorial/03-broken-structure/README.md) | Reimplement `reuse_stack`/`consume` | One slot serves three objects; the return value is lost |
+| [04](tutorial/04-invisible-edges/README.md) | Trace which `render` runs | The vtable edge is invisible; both targets look uncalled |
+| [05](tutorial/05-lost-boundary/README.md) | Recover `spanned`'s cleanup | The function ends too early; exception cleanup is orphaned |
+| [06](tutorial/06-view-vs-fact/README.md) | Match `fused`'s arithmetic | Identical-looking C hides `fmadd` vs `fmul`+`fadd` |
+| [07](tutorial/07-verify-and-scope/README.md) | Know whether the fix is real | A plausible result is not a verified one |
+| [08](tutorial/08-close-out/README.md) | Hand the function to the next person | Named locals and a plate are part of delivery |
 
 ## Three rules that hold everywhere
 
